@@ -1,0 +1,45 @@
+# dependencies
+/node_modules
+
+# next.js
+/.next/
+/out/
+next-env.d.ts
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+install.log
+*.log
+
+# env files
+.env
+.env.local
+.env.development.local
+.env.test
+.env.production
+# test env file is committed on purpose (no secrets)
+!.env.test
+
+# local db
+*.sqlite
+*.sqlite-journal
+*.db
+!.db/schema.sql
+
+# typescript
+*.tsbuildinfo
+
+# playwright
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
