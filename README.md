@@ -89,7 +89,7 @@ flowchart LR
     UI -->|cookie session| API[API routes<br/>nodejs runtime]
     API --> Auth[Auth / Identity<br/>server-injected principal]
     Auth --> Agent[Agent loop<br/>controlled tool-calling]
-    Agent --> LLM[LLM planner<br/>mock / openai]
+    Agent --> LLM[LLM planner<br/>mock | openai]
     Agent --> Validate[Input validation<br/>Zod schemas]
     Agent --> Perm[Permissions<br/>authorize role]
     Agent --> Risk[Risk engine<br/>getRiskLevel]
