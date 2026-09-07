@@ -1,5 +1,5 @@
 import { createDb, type DbPair } from "@/db/client";
-import { createRepo, type Repo } from "@/db/repos";
+import { createSqliteRepo, type Repo } from "@/db/repos";
 import { createAuditor } from "@/lib/audit";
 import { hashPassword } from "@/lib/security";
 import { nowMs } from "@/lib/util";
@@ -26,13 +26,16 @@ export function makePrincipal(role: Principal["role"], id = "ADMIN-1"): Principa
 /** Build a fresh in-memory environment with the standard fixture set. */
 export function makeEnv(): TestEnv {
   const { db, raw } = createDb(":memory:");
-  const repo = createRepo(db);
+  const repo = createSqliteRepo(db);
   const auditor = createAuditor(repo);
 
-  repo.createCustomer({ id: "CUST-1", name: "Jane", email: "jane@t.com", passwordHash: PW, role: "customer", createdAt: T - 60 * DAY });
-  repo.createCustomer({ id: "CUST-2", name: "Alex", email: "alex@t.com", passwordHash: PW, role: "customer", createdAt: T - 60 * DAY });
-  repo.createCustomer({ id: "ADMIN-1", name: "Morgan", email: "admin@t.com", passwordHash: PW, role: "admin", createdAt: T - 60 * DAY });
-  repo.createCustomer({ id: "SUPP-1", name: "Riley", email: "riley@t.com", passwordHash: PW, role: "support_agent", createdAt: T - 60 * DAY });
+  // Seed principals via the raw (synchronous) handle so makeEnv stays sync.
+  const insCust = (id: string, name: string, email: string, role: string) =>
+    raw.prepare("INSERT INTO customers (id, name, email, password_hash, role, created_at) VALUES (?,?,?,?,?,?)").run(id, name, email, PW, role, T - 60 * DAY);
+  insCust("CUST-1", "Jane", "jane@t.com", "customer");
+  insCust("CUST-2", "Alex", "alex@t.com", "customer");
+  insCust("ADMIN-1", "Morgan", "admin@t.com", "admin");
+  insCust("SUPP-1", "Riley", "riley@t.com", "support_agent");
 
   insertOrder(raw, {
     id: "ORD-1", customerId: "CUST-1", status: "delivered", total: 12000, currency: "USD",

@@ -57,6 +57,13 @@ export interface TrackingStatus {
   delivered: boolean;
 }
 
+export interface TicketNote {
+  author: string;
+  authorRole: string;
+  content: string;
+  at: number;
+}
+
 export interface SupportTicket {
   id: string;
   customerId: string;
@@ -65,6 +72,8 @@ export interface SupportTicket {
   description: string;
   priority: TicketPriority;
   status: TicketStatus;
+  /** Agent-only handling thread (replies / notes). Empty when none. */
+  internalNotes: TicketNote[];
   createdAt: number;
   updatedAt: number;
 }

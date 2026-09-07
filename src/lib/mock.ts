@@ -59,6 +59,19 @@ function extractAmountCents(text: string): number | undefined {
 function hasRefundAction(t: string): boolean {
   return /refund/i.test(t) && /\b(my|orders?|last)\b|\$\s?\d|ORD-\d|money back/i.test(t);
 }
+/**
+ * A return/cancellation request vs. a policy question. Action phrasing is
+ * "return/cancel" + a self-referential pronoun ("my/our/this/that/it") or an
+ * explicit order id ("return order ORD-1"). "What is the return policy?" has
+ * neither, so it still routes to lookup_policy.
+ */
+function hasReturnAction(t: string): boolean {
+  return /\breturn(ing)?\b/i.test(t) && (/\b(my|our|this|that|it)\b/i.test(t) || !!extractOrderId(t));
+}
+/** "I want to cancel my order" — a cancellation request about own items. */
+function hasCancelAction(t: string): boolean {
+  return /\bcancel(led|ling)?\b/i.test(t) && (/\b(my|our|this|that|it)\b/i.test(t) || !!extractOrderId(t));
+}
 function hasOrderAction(t: string): boolean {
   const base =
     /where is my order|where.*order|track|tracking|shipped|delivered|my order|check order|order status|status of|show me order|view order/i.test(
@@ -75,6 +88,20 @@ function hasDamaged(t: string): boolean {
 }
 function hasTicketAction(t: string): boolean {
   return /support ticket|open a ticket|file a ticket|create a ticket|create.*ticket|raise.*ticket|ticket for/i.test(t);
+}
+/** A bare "create/open a (support) ticket" with no stated issue. */
+function hasBareTicketAction(t: string): boolean {
+  const stripped = t
+    .replace(/for this order|for that order|for this|for that|about this|about that/gi, " ")
+    .replace(/\b(create|open|file|raise|start|new|a|an|the|me|my|please|can|you|could|support|ticket)\b/gi, " ")
+    .replace(/[^a-zA-Z]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return hasTicketAction(t) && stripped.length < 6;
+}
+/** A customer asking about their OWN orders (not staff phrasing). */
+function hasMyOrdersAction(t: string): boolean {
+  return /\bwhat did i order|what (are|was) (my|our) orders?\b|\b(my|our) (order|orders|purchases|items|purchase history|order history)\b|\bmy order history\b/i.test(t);
 }
 /** True if the request is about the caller's OWN account (not a customer's). */
 function isAboutSelf(t: string): boolean {
@@ -389,9 +416,40 @@ function firstTurn(text: string, messages: LlmMessage[]): LlmPlan {
     return { kind: "tool", tool: "list_customer_orders", args: {} };
   }
 
+  // "I want to return my order/item" -> return request, not a policy question.
+  // Route it through the same refund flow (the 30-day return window applies).
+  if (hasReturnAction(text)) {
+    const id = extractOrderId(text);
+    if (id) {
+      return { kind: "tool", tool: "request_refund", args: { orderId: id, reason: deriveReason(text) } };
+    }
+    return { kind: "tool", tool: "list_customer_orders", args: {} };
+  }
+
+  // "I want to cancel my order" -> open a cancellation ticket (linked to the
+  // mentioned order when present) instead of falling back to generic help.
+  if (hasCancelAction(text)) {
+    const id = extractOrderId(text) ?? extractOrderIdFromContext(messages);
+    const args: Record<string, unknown> = {
+      subject: "Order cancellation request",
+      description: text,
+      priority: priorityFromText(text),
+    };
+    if (id) args.orderId = id;
+    return { kind: "tool", tool: "create_support_ticket", args };
+  }
+
   if (hasOrderAction(text)) {
     const id = extractOrderId(text);
     if (id) return { kind: "tool", tool: "get_order", args: { orderId: id } };
+    // "Where is my order?" with no id: list the customer's orders, then the
+    // afterTool step resolves tracking for the most relevant one.
+    return { kind: "tool", tool: "list_customer_orders", args: {} };
+  }
+
+  // "What did I order?" / "My orders" / "Order history" — a pure listing ask.
+  // Placed before the policy/help fallback so it is never dropped.
+  if (hasMyOrdersAction(text)) {
     return { kind: "tool", tool: "list_customer_orders", args: {} };
   }
 
@@ -408,6 +466,14 @@ function firstTurn(text: string, messages: LlmMessage[]): LlmPlan {
 
   if (hasTicketAction(text)) {
     const id = extractOrderId(text) ?? extractOrderIdFromContext(messages);
+    // A bare "create a support ticket" with no stated issue: don't create a
+    // ticket titled "Support request". Ask what's wrong first.
+    if (hasBareTicketAction(text)) {
+      return {
+        kind: "final",
+        text: "Happy to open a ticket. What's the issue? A short description helps the team pick it up faster (e.g. \"arrived damaged\", \"wrong item\", \"can't log in\").",
+      };
+    }
     const args: Record<string, unknown> = {
       subject: subjectFromText(text),
       description: text,
@@ -428,9 +494,28 @@ function firstTurn(text: string, messages: LlmMessage[]): LlmPlan {
   };
 }
 
+/**
+ * Derive a concise, meaningful ticket subject from the request. Strips the
+ * "please create a support ticket ..." wrapper and keeps the actual issue.
+ * Falls back to a topic-based default (e.g. damaged, cancellation) rather than
+ * the generic "Support request" when the message has a recognizable theme.
+ */
 function subjectFromText(t: string): string {
-  const clean = t.replace(/support ticket|ticket|for this|please|can you|could you/gi, "").trim();
-  return clean.length > 4 ? clean.slice(0, 80) : "Support request";
+  const clean = t
+    .replace(/support ticket|open a ticket|file a ticket|create a ticket|create.*?ticket|raise.*?ticket|for this order|for that order|about this|about that/gi, " ")
+    .replace(/^(please|can you|could you|i would like to|i want to|i'd like to)\s*/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (clean.length >= 4 && clean.length <= 140) {
+    // Title-case the first word for a tidy subject line.
+    return clean.charAt(0).toUpperCase() + clean.slice(1);
+  }
+  if (/damaged|broken|cracked|defective|not working/i.test(t)) return "Damaged or defective item";
+  if (/wrong item|wrong product/i.test(t)) return "Wrong item received";
+  if (/cancel/i.test(t)) return "Cancellation request";
+  if (/lost|missing|didn'?t arrive|never arrived/i.test(t)) return "Lost or missing shipment";
+  if (/login|password|account access/i.test(t)) return "Account access issue";
+  return "General support request";
 }
 function priorityFromText(t: string): "low" | "medium" | "high" {
   if (/urgent|asap|high|damaged|broken|emergency/i.test(t)) return "high";
@@ -456,13 +541,28 @@ function afterTool(messages: LlmMessage[]): LlmPlan {
   switch (name) {
     case "list_customer_orders": {
       const orders: Order[] = result.data?.orders ?? [];
-      if (hasRefundAction(userText)) {
+      if (hasRefundAction(userText) || hasReturnAction(userText)) {
         const target = pickRefundTarget(orders);
         if (!target) return finalNoEligible(orders);
         return {
           kind: "tool",
           tool: "request_refund",
           args: { orderId: target.id, reason: deriveReason(userText) },
+        };
+      }
+      // "What did I order?" -> show the full list (most recent last), not just one.
+      // Tracking phrasing ("where is my order") must keep flowing to
+      // get_tracking_status below, so it is excluded here.
+      if (hasMyOrdersAction(userText) && !isWhereTracking(userText)) {
+        if (!orders.length)
+          return { kind: "final", text: "I couldn't find any orders on your account." };
+        const cards = orders.slice(0, 5).map((o) => ({ kind: "order" as const, order: o }));
+        return {
+          kind: "final",
+          text: `Here are your ${orders.length} order${orders.length > 1 ? "s" : ""} (most recent last):\n${orders
+            .map((o) => `- ${o.id} · ${o.status.replace(/_/g, " ")} · ${formatCents(o.total, o.currency)}`)
+            .join("\n")}`,
+          cards,
         };
       }
       const target = pickLatestOrder(orders);

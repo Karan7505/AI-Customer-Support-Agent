@@ -62,18 +62,18 @@ export interface CreateApprovalOpts {
  * Idempotent on a per-customer/per-order/per-action basis so re-asking does
  * not pile up duplicate pending approvals.
  */
-export function createApproval(
+export async function createApproval(
   repo: Repo,
   auditor: Auditor,
   opts: CreateApprovalOpts,
-): ApprovalRequest {
+): Promise<ApprovalRequest> {
   const t = nowMs();
   // Dedupe: reuse an existing pending approval for the same action+args.
   if (opts.idempotencyKey) {
-    const existing = repo.getPendingApprovalByIdempotencyKey(opts.idempotencyKey);
+    const existing = await repo.getPendingApprovalByIdempotencyKey(opts.idempotencyKey);
     if (existing) {
       const ap = mapApproval(existing);
-      auditor.log(
+      await auditor.log(
         { actor: opts.requestedBy, conversationId: opts.conversationId, approvalId: ap.id },
         "approval.request_existing",
         { toolName: opts.toolName, arguments: opts.arguments, result: { reused: ap.id } },
@@ -83,7 +83,7 @@ export function createApproval(
   }
 
   const id = genId("APR");
-  repo.createApproval({
+  await repo.createApproval({
     id,
     requestedBy: opts.requestedBy.id,
     actorRole: opts.requestedBy.role,
@@ -97,9 +97,9 @@ export function createApproval(
     idempotencyKey: opts.idempotencyKey ?? null,
     createdAt: t,
   });
-  const row = repo.getApproval(id)!;
+  const row = (await repo.getApproval(id))!;
   const ap = mapApproval(row);
-  auditor.log(
+  await auditor.log(
     { actor: opts.requestedBy, conversationId: opts.conversationId, approvalId: ap.id },
     "approval.created",
     { toolName: opts.toolName, arguments: opts.arguments, result: { approvalId: ap.id, risk: ap.riskLevel } },
@@ -108,10 +108,10 @@ export function createApproval(
 }
 
 /** Mark an approval expired if it has outlived its TTL (called on read/decide). */
-function maybeExpire(repo: Repo, row: any): any {
+async function maybeExpire(repo: Repo, row: any): Promise<any> {
   if (row.status !== "pending_approval") return row;
   if (nowMs() - row.createdAt > approvalTtlMs()) {
-    repo.updateApproval(row.id, { status: "expired", resolvedAt: nowMs() });
+    await repo.updateApproval(row.id, { status: "expired", resolvedAt: nowMs() });
     return { ...row, status: "expired" };
   }
   return row;
@@ -124,19 +124,19 @@ export interface DecideOpts {
 }
 
 /** Admin decision. Only admins may approve/reject. Returns the new approval. */
-export function decideApproval(
+export async function decideApproval(
   repo: Repo,
   auditor: Auditor,
   approver: Principal,
   opts: DecideOpts,
-): ApprovalRequest {
+): Promise<ApprovalRequest> {
   if (approver.role !== ROLE_ADMIN) {
     throw Errors.forbidden("Only an admin can approve or reject a request.");
   }
-  const row = repo.getApproval(opts.approvalId);
+  const row = await repo.getApproval(opts.approvalId);
   if (!row) throw Errors.approvalNotFound(opts.approvalId);
-  const live = maybeExpire(repo, row);
-  const current = repo.getApproval(opts.approvalId)!;
+  await maybeExpire(repo, row);
+  const current = (await repo.getApproval(opts.approvalId))!;
   if (current.status === "expired") throw Errors.approvalExpired(current.id);
   if (current.status !== "pending_approval") {
     throw Errors.approvalNotApproved(current.id);
@@ -145,19 +145,19 @@ export function decideApproval(
   if (!canTransition(current.status, to)) {
     throw Errors.approvalNotApproved(current.id);
   }
-  repo.updateApproval(current.id, {
+  await repo.updateApproval(current.id, {
     status: to,
     approvedBy: approver.id,
     rejectionReason: opts.approve ? null : opts.reason ?? null,
     resolvedAt: nowMs(),
   });
   // Keep the linked refund record in sync (e.g. rejected refunds).
-  const linkedRefund = repo.getRefundByApprovalId(current.id);
+  const linkedRefund = await repo.getRefundByApprovalId(current.id);
   if (linkedRefund && !opts.approve) {
-    repo.updateRefund(linkedRefund.id, { status: "rejected" });
+    await repo.updateRefund(linkedRefund.id, { status: "rejected" });
   }
-  const updated = mapApproval(repo.getApproval(current.id)!);
-  auditor.log(
+  const updated = mapApproval((await repo.getApproval(current.id))!);
+  await auditor.log(
     { actor: approver, approvalId: current.id },
     opts.approve ? "approval.approved" : "approval.rejected",
     {
@@ -174,39 +174,42 @@ export function decideApproval(
  * from the approval (never from a caller), runs the refund transaction, and is
  * idempotent via the refund idempotency key.
  */
-export function executeApprovedAction(
+export async function executeApprovedAction(
   repo: Repo,
   auditor: Auditor,
   executor: Principal,
   approvalId: string,
-): { refund: Refund; approval: ApprovalRequest } {
+): Promise<{ refund: Refund; approval: ApprovalRequest }> {
   if (executor.role !== ROLE_ADMIN) {
     throw Errors.forbidden("Only an admin can execute an approved action.");
   }
-  const row = repo.getApproval(approvalId);
+  const row = await repo.getApproval(approvalId);
   if (!row) throw Errors.approvalNotFound(approvalId);
   if (row.status !== "approved") {
     throw Errors.approvalNotApproved(approvalId);
   }
   const approval = mapApproval(row);
 
-  // Canonical refund idempotency key: refund:<customer>:<order>:<approval>.
-  // The refund row was stored under this key at request time, so execution
-  // finds and completes it instead of inserting a second row.
-  const refundKey = refundIdempotencyKey({
-    customerId: approval.requestedBy,
-    orderId: approval.orderId ?? ((approval.arguments as any).orderId as string),
-    approvalId,
-  });
-
   if (approval.toolName === "process_refund") {
     const args = approval.arguments as any;
-    const refund = executeRefund(repo, auditor, executor, {
-      orderId: args.orderId as string,
+    const orderId = (args.orderId as string) ?? approval.orderId!;
+    const order = await repo.getOrder(orderId);
+    if (!order) throw Errors.notFound("Order");
+    // The pending refund was created (in request_refund) keyed to the ORDER'S
+    // owner, not the requesting actor. Use the same key so execution finds and
+    // completes that exact row (crucial for staff-initiated refunds, where the
+    // actor differs from the target customer).
+    const refundKey = refundIdempotencyKey({
+      customerId: order.customerId,
+      orderId,
+      approvalId,
+    });
+    const refund = await executeRefund(repo, auditor, executor, {
+      orderId,
       amountCents: args.amount as number,
       reason: args.reason as string,
       approvalId,
-      customerId: approval.requestedBy,
+      customerId: order.customerId,
       idempotencyKey: refundKey,
     });
     return { refund, approval };

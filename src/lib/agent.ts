@@ -41,17 +41,17 @@ export function createAgent(repo: Repo, llm: LlmClient) {
     const events: AgentEvent[] = [];
     const maxIter = agentMaxIterations();
 
-    const conversation = repo.getOrCreateConversation(principal.id);
+    const conversation = await repo.getOrCreateConversation(principal.id);
     const conversationId = conversation.id;
 
     // Persist the user message and load history for the LLM context.
-    repo.addMessage({
+    await repo.addMessage({
       conversationId,
       role: "user",
       content: userText,
       createdAt: nowMs(),
     });
-    const history = repo.listMessages(conversationId);
+    const history = await repo.listMessages(conversationId);
     const llmMessages: LlmMessage[] = [
       { role: "system", content: buildSystemPrompt(principal) },
       ...history.slice(-20).map((m) => ({
@@ -97,7 +97,7 @@ export function createAgent(repo: Repo, llm: LlmClient) {
         const err = { ok: false, error: { code: "TOOL_ERROR", message: `Unknown tool: ${toolName}` } } as ToolResult;
         events.push({ type: "tool_result", toolName, result: err });
         appendToolMsg(llmMessages, toolName, JSON.stringify(err), i);
-        auditor.log({ actor: principal, conversationId }, "tool.rejected_unknown", { toolName, arguments: args });
+        await auditor.log({ actor: principal, conversationId }, "tool.rejected_unknown", { toolName, arguments: args });
         continue;
       }
 
@@ -119,14 +119,14 @@ export function createAgent(repo: Repo, llm: LlmClient) {
       let result: ToolResult;
       if (!perm.allowed) {
         result = { ok: false, error: { code: "FORBIDDEN", message: perm.reason ?? "Not authorized." } };
-        auditor.log(
+        await auditor.log(
           { actor: principal, conversationId },
           "tool.authorized_no",
           { toolName, arguments: args, result: { reason: perm.reason } },
         );
       } else {
         const risk = getRiskLevel(toolName, args, principal);
-        auditor.log(
+        await auditor.log(
           { actor: principal, conversationId },
           "tool.authorized_yes",
           { toolName, arguments: args, result: { risk } },
@@ -165,14 +165,14 @@ export function createAgent(repo: Repo, llm: LlmClient) {
 
     // Persist the assistant message.
     const meta = { cards: finalCards, structured, events: events.map((e) => summarizeEvent(e)) };
-    repo.addMessage({
+    await repo.addMessage({
       conversationId,
       role: "assistant",
       content: finalText,
       meta,
       createdAt: nowMs(),
     });
-    auditor.log({ actor: principal, conversationId }, "agent.turn_complete", {
+    await auditor.log({ actor: principal, conversationId }, "agent.turn_complete", {
       result: { iterationsUsed: calledOnce.size + 1, finalText: finalText.slice(0, 200) },
     });
 

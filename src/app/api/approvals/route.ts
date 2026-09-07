@@ -17,7 +17,7 @@ export async function GET(req: Request) {
     const status = url.searchParams.get("status") ?? "all";
     const { repo } = deps();
     const auditor = createAuditor(repo);
-    let rows = repo.listApprovals({ limit: 200 });
+    let rows = await repo.listApprovals({ limit: 200 });
     if (status !== "all") rows = rows.filter((r) => r.status === status);
 
     // Admin sees all; support agent sees only their own requests (self-view).
@@ -26,7 +26,10 @@ export async function GET(req: Request) {
       mine = rows.filter((r) => r.requestedBy === principal.id);
     }
 
-    const items = mine.map((r) => withContext(repo, auditor, mapApproval(r)));
+    const items: any[] = [];
+    for (const r of mine) {
+      items.push(await withContext(repo, auditor, mapApproval(r)));
+    }
     return json({ approvals: items });
   } catch (e) {
     return httpError(e);

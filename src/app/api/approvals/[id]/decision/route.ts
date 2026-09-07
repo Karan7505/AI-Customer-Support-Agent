@@ -1,7 +1,6 @@
 import { deps, json, requireRole, httpError } from "../../../_util";
-import { Errors } from "@/lib/errors";
 import { createAuditor } from "@/lib/audit";
-import { decideApproval, executeApprovedAction, mapApproval } from "@/lib/approvals";
+import { decideApproval, executeApprovedAction } from "@/lib/approvals";
 import { ROLE_ADMIN } from "@/db/schema";
 import { withContext } from "../../helpers";
 import { z } from "zod";
@@ -29,7 +28,7 @@ export async function POST(
     const { repo } = deps();
     const auditor = createAuditor(repo);
 
-    const decision = decideApproval(repo, auditor, principal, {
+    const decision = await decideApproval(repo, auditor, principal, {
       approvalId: id,
       approve: body.approve,
       reason: body.reason,
@@ -37,13 +36,13 @@ export async function POST(
 
     let refund = null;
     if (body.approve) {
-      const { refund: r } = executeApprovedAction(repo, auditor, principal, id);
+      const { refund: r } = await executeApprovedAction(repo, auditor, principal, id);
       refund = r;
     }
 
     return json({
       ok: true,
-      approval: withContext(repo, auditor, decision),
+      approval: await withContext(repo, auditor, decision),
       refund,
     });
   } catch (e) {

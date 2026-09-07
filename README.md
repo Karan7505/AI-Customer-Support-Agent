@@ -30,9 +30,11 @@ Log in with any demo account, password `demo1234`:
 | Support agent   | `riley@support.example.com`   |
 | Admin           | `admin@example.com`           |
 
-> The agent runs on a **deterministic offline "mock" planner by default** so the
-> whole workflow is reproducible with **no API key**. Set `LLM_PROVIDER=openai`
-> to use a real OpenAI-compatible function-calling model instead.
+> **No API key? No problem.** With nothing configured the app runs fully offline
+> on a **deterministic mock LLM + local SQLite**. Add keys/URLs in `.env` and it
+> **automatically switches** to real OpenAI and Supabase/Postgres — no code change.
+> The active mode is printed to the server log at startup (see
+> [Runtime modes](#runtime-modes--how-it-auto-switches)).
 
 ### Try the golden path
 1. Log in as **Jane** → ask `Where is order ORD-1001?` → you get the order + live tracking.
@@ -41,6 +43,149 @@ Log in with any demo account, password `demo1234`:
 3. Log in as **Admin** (open `/admin`) → approve the pending request.
 4. The refund is executed **exactly once**, the order becomes `refunded`, the
    customer sees the confirmation, and every step is in the audit log.
+
+---
+
+## Runtime modes & how it auto-switches
+
+The project is **API-key configurable and production-oriented**. Two independent
+switches, both driven purely by environment variables:
+
+| Capability | When it uses the **real** service | When it stays **offline** |
+|------------|-----------------------------------|---------------------------|
+| **LLM** (mock → OpenAI) | `OPENAI_API_KEY` is set (or `LLM_PROVIDER=openai` with a key) | no key → deterministic mock planner |
+| **Database** (SQLite → Supabase/Postgres) | `DATABASE_URL` is set (Postgres connection string) | no URL → local SQLite file |
+
+The active configuration is logged **once at startup** (and in `.env`-driven
+scripts), e.g.:
+
+```
+[aurora] ───────────────────────────────
+[aurora] runtime mode
+[aurora]   LLM:    MOCK    deterministic offline planner (no OPENAI_API_KEY)
+[aurora]   Data:   sqlite  local SQLite at ./data/app.db
+[aurora]   max tool iterations: 6
+[aurora]   (set OPENAI_API_KEY and/or DATABASE_URL to switch to real services)
+[aurora] ───────────────────────────────
+```
+
+If `LLM_PROVIDER=openai` is set **without** a key, it safely falls back to the mock
+planner and logs a warning (it never crashes).
+
+### Local setup (mock + SQLite — the default, zero external services)
+
+```bash
+# 1. Install
+npm install
+
+# 2. (Optional) create your local env file. Empty = mock + SQLite.
+cp .env.example .env.local
+
+# 3. Create + migrate + seed the local SQLite DB
+npm run db:reset
+
+# 4. Run (backend + frontend together — Next.js serves both)
+npm run dev
+# -> http://localhost:3000
+```
+
+No `.env` is required for local development; sensible offline defaults apply.
+
+### `.env` setup (real services)
+
+Copy the template and fill in **only what you want to switch on**:
+
+```bash
+cp .env.example .env.local      # Windows (PowerShell): Copy-Item .env.example .env.local
+```
+
+`.env.example` contains **placeholders only** — never commit real values
+(`.env.local` is git-ignored). Minimum examples:
+
+```bash
+# --- Switch ON real OpenAI (optional) ---
+OPENAI_API_KEY=sk-...                     # your key
+OPENAI_BASE_URL=https://api.openai.com/v1 # any OpenAI-compatible endpoint
+OPENAI_MODEL=gpt-4o-mini
+
+# --- Switch ON Supabase/Postgres (optional) ---
+DATABASE_URL=postgresql://postgres.<ref>:<password>@aws-<region>.rds.<region>.amazonaws.com:5432/postgres
+
+# --- Required in production ---
+SESSION_SECRET=<long-random-string>
+APP_URL=https://your-domain
+```
+
+### OpenAI setup (via `OPENAI_API_KEY`)
+
+1. Put `OPENAI_API_KEY=sk-...` in `.env.local`. That alone flips the LLM to
+   OpenAI-compatible function calling (`OPENAI_BASE_URL` / `OPENAI_MODEL` to
+   override for vLLM, OpenRouter, etc.).
+2. Re-run `npm run dev`. The startup log will show `LLM: OPENAI model=… base=…`.
+3. All deterministic safety rules (permissions, risk, approval, idempotency,
+   validation) are **unchanged** — the model only proposes; the app still decides.
+
+> Not verified here against a real key. With a key present and the model
+> reachable, the same tool-calling loop runs on the OpenAI planner.
+
+### Supabase / Postgres setup (via `DATABASE_URL`)
+
+1. In the Supabase console: **Project Settings → Database → Connection string**
+   (use the session/pooler URL). Set it as `DATABASE_URL=...` in `.env.local`.
+2. Apply the schema and seed:
+   ```bash
+   npm run db:migrate   # applies .db/schema.pg.sql (idempotent)
+   npm run db:seed      # or: npm run db:seed -- --force
+   ```
+3. Re-run `npm run dev`. The startup log will show `Data: postgres Supabase/Postgres (DATABASE_URL set)`.
+
+The whole data layer is driver-agnostic: `src/db/repos.ts` implements the same
+async `Repo` for both **SQLite** (`createSqliteRepo`) and **Postgres**
+(`createPostgresRepo`); `getRepo()` selects the driver from `DATABASE_URL`. The
+Postgres DDL lives in `.db/schema.pg.sql` and is applied automatically by
+`db:migrate` when `DATABASE_URL` is set.
+
+> **Not verified here against a live Supabase/Postgres instance** (none was
+> available in this environment). The adapter is implemented, type-checked, and
+> mirrors the tested SQLite logic, but you should run `npm run db:migrate`,
+> `npm run db:seed`, and the app against your real instance before relying on it.
+
+### Running the backend and frontend
+
+This is a single Next.js application: **the backend (API routes + agent + DB) and
+the frontend (pages) run in one process**, so `npm run dev` / `npm run start`
+starts both together. If you need them separated (e.g. deploying the API and a
+static frontend independently), the split boundary is the API:
+
+- **Backend** — the API is all under `src/app/api/**` (Node runtime). It is fully
+  self-contained: it reads env, owns auth, the agent loop, and the DB. Any client
+  that can `fetch` the JSON endpoints (login, `/api/chat`, `/api/approvals`, …)
+  is a "backend" consumer.
+- **Frontend** — `src/app/login`, `/chat`, `/admin` are React pages that call those
+  same `/api/*` endpoints via `fetch` (cookie auth).
+
+Exact commands:
+
+```bash
+# Development (single process, hot reload)
+npm run dev
+
+# Production
+npm run build          # compiles .next
+npm run start          # serves the production build
+
+# Database lifecycle (driver chosen from env)
+npm run db:migrate     # apply schema (SQLite file or Postgres by DATABASE_URL)
+npm run db:seed        # seed demo data
+npm run db:reset       # wipe + migrate + seed
+
+# Verification
+npm run typecheck
+npm run lint
+npm test               # unit + integration + eval (SQLite)
+npm run eval           # agent evaluations only
+npm run test:e2e       # Playwright (starts a fresh seeded dev server)
+```
 
 ## Screenshots
 
@@ -89,7 +234,7 @@ flowchart LR
     UI -->|cookie session| API[API routes<br/>nodejs runtime]
     API --> Auth[Auth / Identity<br/>server-injected principal]
     Auth --> Agent[Agent loop<br/>controlled tool-calling]
-    Agent --> LLM[LLM planner<br/>mock | openai]
+    Agent --> LLM[LLM planner<br/>mock | openai by env]
     Agent --> Validate[Input validation<br/>Zod schemas]
     Agent --> Perm[Permissions<br/>authorize role]
     Agent --> Risk[Risk engine<br/>getRiskLevel]
@@ -98,9 +243,10 @@ flowchart LR
     Risk -->|high| Approve[Approval workflow<br/>create request]
     Approve --> Human[Admin approves / rejects]
     Human -->|approved| Exec[Executor<br/>process_refund internal]
-    Tools --> Repo[Repositories<br/>Drizzle]
+    Tools --> Repo[Repo interface<br/>async, driver-agnostic]
     Exec --> Repo
-    Repo --> DB[(SQLite)]
+    Repo -->|DATABASE_PATH| DB1[(SQLite<br/>default)]
+    Repo -->|DATABASE_URL| DB2[(Supabase / Postgres)]
     Approve --> Audit[(Audit log)]
     Exec --> Audit
     Tools --> Audit
@@ -129,10 +275,13 @@ User Message
 ## Tech stack
 
 - **Next.js 15 + TypeScript** (App Router, `nodejs` runtime for all API routes)
-- **SQLite via better-sqlite3 + Drizzle ORM** — a local, zero-config "Postgres-like"
-  relational store so the project runs anywhere. The repository layer isolates all
-  SQL, so swapping to PostgreSQL/Supabase is a bounded change.
-- **OpenAI-compatible function calling** (optional) + a **deterministic mock planner** (default)
+- **Drizzle ORM** with two interchangeable drivers, chosen by env:
+  - **SQLite** (better-sqlite3) — local, zero-config default (offline mode)
+  - **Postgres** (postgres-js) — **Supabase** when `DATABASE_URL` is set
+  The whole app depends on a single async `Repo` interface, so the driver is a
+  bounded, swappable detail.
+- **OpenAI-compatible function calling** (auto when `OPENAI_API_KEY` present) + a
+  **deterministic mock planner** (offline default)
 - **Zod** runtime validation for every tool input
 - **Tailwind CSS** UI
 - **Vitest** unit + integration tests, **Playwright** E2E
@@ -255,13 +404,19 @@ src/
       status/route.ts         # customer's own approvals/refunds
       audit/route.ts          # full audit trail (admin)
   db/
-    schema.ts client.ts repos.ts
-    migrate.ts seed.ts
+    schema.ts                 # SQLite schema (drizzle)
+    schema.pg.ts              # Postgres/Supabase schema (drizzle)
+    row-types.ts              # shared row shapes (driver-agnostic)
+    client.ts                 # connection: getDb() [SQLite] / getPostgresDb() [PG]
+    repos.ts                  # async Repo: createSqliteRepo + createPostgresRepo + getRepo()
+    migrate.ts                # applies schema (SQLite or Postgres by DATABASE_URL)
+    seed.ts                   # driver-agnostic seed
   lib/
+    env.ts                    # config + runtime mode detection + startup banner
     agent.ts                  # controlled tool-calling loop
-    llm.ts llm-factory.ts     # LlmClient interface + factory
+    llm.ts llm-factory.ts     # LlmClient interface + auto-selecting factory
     mock.ts                   # deterministic offline planner (default)
-    openai.ts                 # OpenAI-compatible planner (optional)
+    openai.ts                 # OpenAI-compatible planner (auto when key set)
     policy.ts                 # getRiskLevel, authorize, visibleToolsFor
     refunds.ts                # eligibility + idempotency keys
     refund-execution.ts       # transactional process_refund
@@ -269,8 +424,9 @@ src/
     tools.ts                  # tool registry + runTool
      schemas.ts                # Zod input/output schemas
      knowledge.ts              # FAQ/KB with citations
-     auth.ts security.ts env.ts ids.ts audit.ts errors.ts types.ts util.ts
- .db/schema.sql                # raw DDL (idempotent)
+     auth.ts security.ts ids.ts audit.ts errors.ts types.ts util.ts
+  .db/schema.sql                # SQLite DDL (idempotent)
+  .db/schema.pg.sql             # Postgres/Supabase DDL (idempotent)
  images/                       # README screenshots
  tests/
    unit/… integration/… eval/… e2e/…
@@ -280,36 +436,49 @@ src/
 
 ## Environment variables
 
-See `.env.example`. Everything has a working offline default.
+See `.env.example` (placeholders only). Everything has a working offline default —
+the app runs with **no** variables set.
 
 | Variable | Required | Default | Notes |
 |----------|----------|---------|-------|
-| `LLM_PROVIDER` | no | `mock` | `mock` (offline, deterministic) or `openai` |
-| `OPENAI_API_KEY` | if `openai` | — | Never commit. Any OpenAI-compatible key. |
-| `OPENAI_BASE_URL` | no | OpenAI | For vLLM/OpenRouter/etc. |
-| `OPENAI_MODEL` | no | `gpt-4o-mini` | — |
+| `OPENAI_API_KEY` | **no** (enables real LLM) | — | Auto-switches LLM to OpenAI when set. Never commit. |
+| `OPENAI_BASE_URL` | no | OpenAI | Any OpenAI-compatible endpoint (vLLM, OpenRouter, …). |
+| `OPENAI_MODEL` | no | `gpt-4o-mini` | Model name. |
+| `LLM_PROVIDER` | no | _(auto)_ | Force `mock` or `openai`. `openai` without a key safely falls back to `mock`. |
+| `DATABASE_URL` | **no** (enables real DB) | — | Supabase/Postgres connection string. Auto-switches DB to Postgres when set. |
+| `DATABASE_PATH` | no | `./data/app.db` | SQLite file (used only when `DATABASE_URL` is empty). |
 | `AGENT_MAX_ITERATIONS` | no | `6` | Infinite-loop guard. |
-| `DATABASE_PATH` | no | `./data/app.db` | SQLite file. |
-| `SESSION_SECRET` | no | dev value | HMAC for session tokens. Set a long random string in prod. |
-| `APP_URL` | no | `http://localhost:3000` | — |
+| `SESSION_SECRET` | no | dev value | HMAC for session tokens. **Set a long random string in production.** |
+| `APP_URL` | no | `http://localhost:3000` | Public base URL. |
 | `APPROVAL_TTL_HOURS` | no | `72` | How long a pending approval stays actionable. |
+
+The mode banner (see [Runtime modes](#runtime-modes--how-it-auto-switches)) shows
+which values took effect, without ever printing the key or URL themselves.
 
 ---
 
 ## Database
 
-SQLite (better-sqlite3). Tables: `customers, orders, support_tickets, refunds,
-approval_requests, audit_logs, sessions, conversations, messages`. Monetary values
-are integer cents; timestamps are epoch ms.
+Driver selected by `DATABASE_URL`:
+
+- **SQLite (default)** — `better-sqlite3`, local file at `DATABASE_PATH`. Zero-config.
+- **Postgres / Supabase** — `postgres-js` via `DATABASE_URL`. Same tables and the
+  same `Repo` interface.
+
+Tables: `customers, orders, support_tickets, refunds, approval_requests,
+audit_logs, sessions, conversations, messages`. Monetary values are integer cents;
+timestamps are epoch ms. Schemas: SQLite in `.db/schema.sql`, Postgres in
+`.db/schema.pg.sql`.
 
 ```bash
-npm run db:migrate     # apply schema (idempotent)
-npm run db:seed        # seed if empty
-npm run db:reset       # wipe + rebuild + reseed
+npm run db:migrate     # apply schema (idempotent; SQLite or Postgres by env)
+npm run db:seed        # seed demo data (--force to reseed)
+npm run db:reset       # wipe + migrate + seed (SQLite)
 ```
 
-To move to PostgreSQL/Supabase: the only place SQL is written is `src/db/repos.ts`
-plus the DDL in `.db/schema.sql`. The rest of the app is store-agnostic.
+Because all SQL lives behind the async `Repo` interface in `src/db/repos.ts`
+(`createSqliteRepo` / `createPostgresRepo`) with shared DDL, the rest of the app is
+completely store-agnostic.
 
 ---
 
@@ -341,27 +510,3 @@ npm run test:e2e       # Playwright (starts a fresh seeded dev server)
   lookup works.
 
 ---
-
-## Known limitations
-
-- **Mock planner is deterministic, not a general LLM.** It handles the intended
-  support intents well and makes the workflow reproducible, but it won't parse
-  arbitrary novel phrasings the way a real model would. Point `LLM_PROVIDER=openai`
-  at a model for natural-language breadth; all safety rules are unchanged.
-- **Auth is demo-grade** (email + shared demo password, HMAC-signed cookie). Real
-  deployments should use a proper IdP and per-user hashed credentials.
-- **SQLite is a single-node store** chosen for zero-config portability; the
-  repository layer isolates it for easy swap to PostgreSQL.
-- **`process_refund`** is intentionally a thin internal executor; a real system
-  would call a payment provider and handle chargebacks/webhooks.
-
----
-
-## Definition of done (all verified)
-
-Install, migrate, seed, frontend + backend start, customer auth, real-data order
-lookup, cross-customer blocking, ticket persistence, refund eligibility, sensitive
-refund → approval (not immediate execution), admin approve/reject, approved refund
-persists, rejected refund does not execute, duplicate execution prevented, audit
-logs created, tool validation, automated tests, lint, typecheck, production build,
-and the critical E2E flow all pass.
