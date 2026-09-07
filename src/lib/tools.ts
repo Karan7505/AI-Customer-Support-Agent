@@ -1,13 +1,14 @@
 import type { Repo } from "@/db/repos";
 import { genId } from "./ids";
 import { Errors } from "./errors";
-import { nowMs, formatCents } from "./util";
+import { nowMs, formatCents, parseJson } from "./util";
 import type {
   AgentCard,
   Order,
   Principal,
   Refund,
   SupportTicket,
+  TicketNote,
   TicketPriority,
   ToolResult,
   TrackingStatus,
@@ -77,8 +78,8 @@ function validate(schema: any, args: any) {
  *    NOT_FOUND, so cross-customer existence is not leaked);
  *  - staff (support/admin): any order in the system.
  */
-function findOrderFor(ctx: ToolContext, orderId: string): Order {
-  const order = ctx.repo.getOrder(orderId);
+async function findOrderFor(ctx: ToolContext, orderId: string): Promise<Order> {
+  const order = await ctx.repo.getOrder(orderId);
   if (!order) throw Errors.notFound("Order");
   if (!isStaff(ctx.principal.role) && order.customerId !== ctx.principal.id) {
     throw Errors.notFound("Order");
@@ -91,13 +92,13 @@ function findOrderFor(ctx: ToolContext, orderId: string): Order {
  *  - customer: always themselves; any other customerId is rejected;
  *  - staff: the customerId argument is mandatory (they act on someone's behalf).
  */
-function resolveRefundCustomer(ctx: ToolContext, order: Order, requested?: string): string {
+async function resolveRefundCustomer(ctx: ToolContext, order: Order, requested?: string): Promise<string> {
   if (isStaff(ctx.principal.role)) {
     // The order unambiguously identifies its owner; refund targets that owner.
     // If a customerId is explicitly given, it must be a real customer that owns
     // the order (prevents staff mis-targeting a different account).
     if (requested) {
-      const c = ctx.repo.getCustomer(requested);
+      const c = await ctx.repo.getCustomer(requested);
       if (!c || c.role !== "customer") throw Errors.notFound("Customer");
       if (c.id !== order.customerId) {
         throw Errors.eligibility("That order belongs to a different customer.");
@@ -122,19 +123,20 @@ function mapTicket(row: any): SupportTicket {
     description: row.description,
     priority: row.priority as TicketPriority,
     status: row.status,
+    internalNotes: parseJson<TicketNote[]>(row.internalNotes, []),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
 }
 
 /** Resolve the customer a support ticket is for (staff may target any customer). */
-function resolveTicketCustomer(ctx: ToolContext, order: Order | null, requested?: string): string {
+async function resolveTicketCustomer(ctx: ToolContext, order: Order | null, requested?: string): Promise<string> {
   if (isStaff(ctx.principal.role)) {
     const cid = requested ?? order?.customerId ?? undefined;
     if (!cid) {
       throw Errors.validation("Staff must specify the customer (customerId) the ticket is for.");
     }
-    const c = ctx.repo.getCustomer(cid);
+    const c = await ctx.repo.getCustomer(cid);
     if (!c || c.role !== "customer") throw Errors.notFound("Customer");
     if (order && order.customerId !== c.id) {
       throw Errors.eligibility("The referenced order belongs to a different customer.");
@@ -221,7 +223,7 @@ const get_order: ToolSpec = {
   internal: false,
   handler: async (ctx, raw) => {
     const { orderId } = validate(GetOrderInput, raw);
-    const order = findOrderFor(ctx, orderId);
+    const order = await findOrderFor(ctx, orderId);
     return { ok: true, data: { order } };
   },
 };
@@ -229,12 +231,12 @@ const get_order: ToolSpec = {
 const list_customer_orders: ToolSpec = {
   name: "list_customer_orders",
   description:
-    "List the orders that belong to the signed-in customer (most recent last). Read-only. Never returns another customer's orders.",
+    "List the orders that belong to the signed-in customer (most recent last). Use it for 'what did I order?', 'my orders', 'order history', tracking questions, and refund/return lookups. Read-only. Never returns another customer's orders.",
   parameters: { type: "object", properties: {}, additionalProperties: false },
   internal: false,
   handler: async (ctx) => {
     validate(ListCustomerOrdersInput, {});
-    const orders = ctx.repo.getOrdersByCustomer(ctx.principal.id);
+    const orders = await ctx.repo.getOrdersByCustomer(ctx.principal.id);
     return { ok: true, data: { orders } };
   },
 };
@@ -251,7 +253,7 @@ const get_tracking_status: ToolSpec = {
   internal: false,
   handler: async (ctx, raw) => {
     const { orderId } = validate(GetTrackingStatusInput, raw);
-    const order = findOrderFor(ctx, orderId);
+    const order = await findOrderFor(ctx, orderId);
     const tracking = mockTracking(order);
     return { ok: true, data: { order, tracking } };
   },
@@ -281,13 +283,13 @@ const create_support_ticket: ToolSpec = {
     let orderId: string | null = null;
     let order: Order | null = null;
     if (args.orderId) {
-      order = findOrderFor(ctx, args.orderId); // ownership enforced here
+      order = await findOrderFor(ctx, args.orderId); // ownership enforced here
       orderId = order.id;
     }
-    const customerId = resolveTicketCustomer(ctx, order, args.customerId as string | undefined);
+    const customerId = await resolveTicketCustomer(ctx, order, args.customerId as string | undefined);
     const id = genId("TCK");
     const t = nowMs();
-    const row = ctx.repo.createTicket({
+    const row = await ctx.repo.createTicket({
       id,
       customerId,
       orderId,
@@ -295,11 +297,12 @@ const create_support_ticket: ToolSpec = {
       description: args.description,
       priority: args.priority,
       status: "open",
+      internalNotes: null,
       createdAt: t,
       updatedAt: t,
     });
     const ticket = mapTicket(row);
-    ctx.auditor.log(
+    await ctx.auditor.log(
       { actor: ctx.principal, conversationId: ctx.conversationId },
       "ticket.created",
       { toolName: "create_support_ticket", arguments: args, result: { ticketId: id } },
@@ -331,7 +334,7 @@ const lookup_policy: ToolSpec = {
         },
       };
     }
-    ctx.auditor.log(
+    await ctx.auditor.log(
       { actor: ctx.principal, conversationId: ctx.conversationId },
       "policy.lookup",
       { toolName: "lookup_policy", arguments: { query }, result: { topic: ans.topic } },
@@ -343,7 +346,7 @@ const lookup_policy: ToolSpec = {
 const request_refund: ToolSpec = {
   name: "request_refund",
   description:
-    "Request a refund for the signed-in customer's order. Runs ownership, eligibility, amount and duplicate checks, then creates an approval request. It NEVER executes a refund itself.",
+    "Request a refund for the signed-in customer's order (also the mechanism for return/refund requests within the return window). Runs ownership, eligibility, amount and duplicate checks, then creates an approval request. It NEVER executes a refund itself.",
   parameters: {
     type: "object",
     properties: {
@@ -364,15 +367,15 @@ const request_refund: ToolSpec = {
   internal: false,
   handler: async (ctx, raw) => {
     const args = validate(RequestRefundInput, raw);
-    const order = findOrderFor(ctx, args.orderId);
-    const customerId = resolveRefundCustomer(ctx, order, args.customerId);
+    const order = await findOrderFor(ctx, args.orderId);
+    await resolveRefundCustomer(ctx, order, args.customerId);
     const amount = args.amount ?? order.refundableAmount;
     const normalizedAmount = Math.round(amount);
 
     // Duplicate guard: an open (non-terminal) refund already in flight for this order.
-    const open = ctx.repo.getOpenRefundForOrder(order.id);
+    const open = await ctx.repo.getOpenRefundForOrder(order.id);
     if (open) {
-      const existingAp = open.approvalId ? ctx.repo.getApproval(open.approvalId) : undefined;
+      const existingAp = open.approvalId ? await ctx.repo.getApproval(open.approvalId) : undefined;
       return {
         ok: false,
         error: {
@@ -400,7 +403,7 @@ const request_refund: ToolSpec = {
       amountCents: normalizedAmount,
       reason: args.reason,
     });
-    const approval = createApproval(ctx.repo, ctx.auditor, {
+    const approval = await createApproval(ctx.repo, ctx.auditor, {
       requestedBy: ctx.principal,
       actionType: "refund",
       toolName: "process_refund",
@@ -426,7 +429,7 @@ const request_refund: ToolSpec = {
       orderId: order.id,
       approvalId: approval.id,
     });
-    ctx.repo.createRefund({
+    await ctx.repo.createRefund({
       id: refundId,
       orderId: order.id,
       customerId: order.customerId,
@@ -439,7 +442,7 @@ const request_refund: ToolSpec = {
       processedAt: null,
     });
 
-    ctx.auditor.log(
+    await ctx.auditor.log(
       { actor: ctx.principal, conversationId: ctx.conversationId, approvalId: approval.id },
       "refund.requested",
       {
@@ -449,7 +452,7 @@ const request_refund: ToolSpec = {
       },
     );
 
-    const targetCustomer = ctx.repo.getCustomer(order.customerId);
+    const targetCustomer = await ctx.repo.getCustomer(order.customerId);
     return {
       ok: true,
       data: {
@@ -483,7 +486,7 @@ const search_customers: ToolSpec = {
   internal: false,
   handler: async (ctx, raw) => {
     const { query, limit } = validate(SearchCustomersInput, raw);
-    const rows = ctx.repo.searchCustomers(query, limit ?? 10);
+    const rows = await ctx.repo.searchCustomers(query, limit ?? 10);
     const customers = rows.map((r) => ({
       id: r.id,
       name: r.name,
@@ -515,7 +518,7 @@ const list_orders: ToolSpec = {
   internal: false,
   handler: async (ctx, raw) => {
     const args = validate(ListOrdersInput, raw);
-    const orders = ctx.repo.searchOrders({
+    const orders = await ctx.repo.searchOrders({
       customerId: args.customerId,
       status: args.status,
       limit: args.limit ?? 10,
@@ -541,7 +544,7 @@ const list_tickets: ToolSpec = {
   internal: false,
   handler: async (ctx, raw) => {
     const args = validate(ListTicketsInput, raw);
-    const rows = ctx.repo.listTickets({
+    const rows = await ctx.repo.listTickets({
       customerId: args.customerId,
       status: args.status,
       limit: args.limit ?? 15,
@@ -569,18 +572,29 @@ const update_support_ticket: ToolSpec = {
   internal: false,
   handler: async (ctx, raw) => {
     const args = validate(UpdateSupportTicketInput, raw);
-    const existing = ctx.repo.getTicket(args.ticketId);
+    const existing = await ctx.repo.getTicket(args.ticketId);
     if (!existing) throw Errors.notFound("Ticket");
-    const patch: { status?: string; priority?: string; updatedAt: number } = { updatedAt: nowMs() };
+    const t = nowMs();
+    const patch: { status?: string; priority?: string; internalNotes?: string; updatedAt: number } = { updatedAt: t };
     if (args.status) patch.status = args.status;
     if (args.priority) patch.priority = args.priority;
-    ctx.repo.updateTicket(args.ticketId, patch);
-    const updated = ctx.repo.getTicket(args.ticketId)!;
+    if (args.note) {
+      // Append to the agent-only handling thread (visible to staff, not to customers).
+      const notes = parseJson<TicketNote[]>(existing.internalNotes, []);
+      notes.push({ author: ctx.principal.name, authorRole: ctx.principal.role, content: args.note, at: t });
+      patch.internalNotes = JSON.stringify(notes);
+    }
+    await ctx.repo.updateTicket(args.ticketId, patch);
+    const updated = (await ctx.repo.getTicket(args.ticketId))!;
     const ticket = mapTicket(updated);
-    ctx.auditor.log(
+    await ctx.auditor.log(
       { actor: ctx.principal, conversationId: ctx.conversationId },
-      "ticket.updated",
-      { toolName: "update_support_ticket", arguments: args, result: { ticketId: ticket.id, status: ticket.status } },
+      args.note ? "ticket.note_added" : "ticket.updated",
+      {
+        toolName: "update_support_ticket",
+        arguments: args,
+        result: { ticketId: ticket.id, status: ticket.status, note: args.note ?? null },
+      },
     );
     return { ok: true, data: { ticket } };
   },

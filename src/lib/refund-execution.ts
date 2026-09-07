@@ -42,26 +42,26 @@ export function mapRefund(row: any): Refund {
  *     decremented exactly once — all in one transaction.
  *  4. Emits audit entries and returns the persisted refund.
  */
-export function executeRefund(
+export async function executeRefund(
   repo: Repo,
   auditor: Auditor,
   executor: Principal,
   opts: ExecuteRefundOpts,
-): Refund {
+): Promise<Refund> {
   if (executor.role !== ROLE_ADMIN) {
     throw Errors.forbidden("Only an admin can execute a refund.");
   }
-  const order = repo.getOrder(opts.orderId);
+  const order = await repo.getOrder(opts.orderId);
   if (!order) throw Errors.notFound("Order");
 
   const amount = Math.round(opts.amountCents);
   if (amount <= 0) throw Errors.validation("Refund amount must be positive.");
 
-  const existing = repo.getRefundByIdempotencyKey(opts.idempotencyKey);
+  const existing = await repo.getRefundByIdempotencyKey(opts.idempotencyKey);
 
   // Idempotent no-op: this approved action already produced a completed refund.
   if (existing && existing.status === "completed") {
-    auditor.log(
+    await auditor.log(
       { actor: executor, approvalId: opts.approvalId },
       "refund.executed_existing",
       { toolName: "process_refund", arguments: opts, result: { refundId: existing.id, idempotent: true } },
@@ -76,59 +76,32 @@ export function executeRefund(
     );
   }
 
-  const t = nowMs();
-  let refundId = existing ? existing.id : undefined;
-
   try {
-    repo.transaction(() => {
-      if (existing) {
-        // Update the pending refund created at request time -> completed.
-        repo.updateRefund(existing.id, { status: "completed", processedAt: t });
-        refundId = existing.id;
-      } else {
-        // No pending record (e.g. created directly via approval). Insert one.
-        const newId = `REF-${opts.approvalId.slice(-6)}${Math.floor(Math.random() * 90 + 10)}`;
-        refundId = newId;
-        repo.createRefund({
-          id: newId,
-          orderId: order.id,
-          customerId: order.customerId,
-          amount,
-          reason: opts.reason,
-          status: "completed",
-          approvalId: opts.approvalId,
-          idempotencyKey: opts.idempotencyKey,
-          createdAt: t,
-          processedAt: t,
-        });
-      }
-      const remaining = order.refundableAmount - amount;
-      const newStatus = remaining <= 0 ? "refunded" : "partially_refunded";
-      repo.updateOrderRefundState(order.id, Math.max(0, remaining), newStatus);
-    });
+    // Atomic, driver-appropriate write: complete the pending refund row and
+    // decrement the order balance exactly once. (SQLite = sync transaction,
+    // Postgres = async transaction; both handled by the adapter.)
+    const applied = await repo.applyRefund({ orderId: order.id, amount });
+    const refund = mapRefund(applied);
+    await auditor.log(
+      { actor: executor, approvalId: opts.approvalId },
+      "refund.completed",
+      {
+        toolName: "process_refund",
+        arguments: opts,
+        result: { refundId: refund.id, amountCents: refund.amount, orderId: refund.orderId },
+      },
+    );
+    return refund;
   } catch (e) {
     // Persist a failed record (best-effort) so the failure is auditable.
     try {
-      if (!existing) {
-        repo.createRefund({
-          id: refundId ?? `REF-fail-${opts.approvalId}`,
-          orderId: order.id,
-          customerId: order.customerId,
-          amount,
-          reason: opts.reason,
-          status: "failed",
-          approvalId: opts.approvalId,
-          idempotencyKey: opts.idempotencyKey,
-          createdAt: t,
-          processedAt: null,
-        });
-      } else {
-        repo.updateRefund(existing.id, { status: "failed" });
+      if (existing) {
+        await repo.updateRefund(existing.id, { status: "failed" });
       }
     } catch {
       /* ignore secondary errors */
     }
-    auditor.log(
+    await auditor.log(
       { actor: executor, approvalId: opts.approvalId },
       "refund.failed",
       { toolName: "process_refund", arguments: opts, result: { error: e instanceof Error ? e.message : String(e) } },
@@ -137,16 +110,4 @@ export function executeRefund(
       `Refund processing failed: ${e instanceof Error ? e.message : String(e)}`,
     );
   }
-
-  const refund = mapRefund(repo.getRefund(refundId!)!);
-  auditor.log(
-    { actor: executor, approvalId: opts.approvalId },
-    "refund.completed",
-    {
-      toolName: "process_refund",
-      arguments: opts,
-      result: { refundId: refund.id, amountCents: refund.amount, orderId: refund.orderId },
-    },
-  );
-  return refund;
 }

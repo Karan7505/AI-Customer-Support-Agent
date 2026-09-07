@@ -106,6 +106,8 @@ export const supportTickets = sqliteTable(
     description: text("description").notNull(),
     priority: text("priority").notNull().default("medium"),
     status: text("status").notNull().default("open"),
+    /** JSON array of {author, authorRole, content, at} — agent handling thread. */
+    internalNotes: text("internal_notes"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },

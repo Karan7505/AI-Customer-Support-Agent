@@ -48,10 +48,10 @@ describe("Staff (admin/support) chat", () => {
 
   it("admin can list tickets", async () => {
     const env = makeEnv();
-    env.repo.createTicket({
+    await env.repo.createTicket({
       id: "TCK-1", customerId: "CUST-1", orderId: null,
       subject: "Fixture ticket", description: "A pre-existing open ticket.",
-      priority: "low", status: "open", createdAt: env.now, updatedAt: env.now,
+      priority: "low", status: "open", internalNotes: null, createdAt: env.now, updatedAt: env.now,
     });
     const res = await agentFor(env).runTurn({ principal: admin(), userText: "List the open tickets" });
     expect(res.assistantText).toMatch(/TCK-1/);
@@ -59,15 +59,15 @@ describe("Staff (admin/support) chat", () => {
 
   it("admin can file a ticket on a customer's behalf", async () => {
     const env = makeEnv();
-    const before = env.repo.listTickets({ limit: 100 }).length;
+    const before = (await env.repo.listTickets({ limit: 100 })).length;
     const res = await agentFor(env).runTurn({
       principal: admin(),
       userText: "Create a support ticket for the customer Alex: their order arrived damaged",
     });
     expect(res.assistantText).toMatch(/TCK-/i);
-    expect(env.repo.listTickets({ limit: 100 }).length).toBe(before + 1);
+    expect((await env.repo.listTickets({ limit: 100 })).length).toBe(before + 1);
     // The new ticket belongs to Alex (CUST-2), not the admin.
-    expect(env.repo.listTickets({ customerId: "CUST-2", limit: 1 }).length).toBeGreaterThan(0);
+    expect((await env.repo.listTickets({ customerId: "CUST-2", limit: 1 })).length).toBeGreaterThan(0);
   });
 
   it("admin can initiate a refund FOR a customer -> approval keyed to that customer", async () => {
@@ -81,11 +81,11 @@ describe("Staff (admin/support) chat", () => {
     expect(s?.orderId).toBe("ORD-1");
     expect(res.assistantText).toMatch(/approval/i);
     // The pending refund must be attributed to Jane (CUST-1), not the admin.
-    const refunds = env.repo.getRefundsByOrder("ORD-1");
+    const refunds = await env.repo.getRefundsByOrder("ORD-1");
     expect(refunds).toHaveLength(1);
     expect(refunds[0].customerId).toBe("CUST-1");
     expect(refunds[0].status).toBe("pending_approval");
-    const approval = env.repo.getApproval(refunds[0].approvalId!)!;
+    const approval = (await env.repo.getApproval(refunds[0].approvalId!))!;
     expect(approval.requestedBy).toBe("ADMIN-1"); // the staff member initiated it
     expect(approval.orderId).toBe("ORD-1");
     expect(approval.amountCents).toBe(5000);
@@ -108,6 +108,6 @@ describe("Staff (admin/support) chat", () => {
       userText: "Refund $10 from order ORD-9999 for the customer Alex",
     });
     // ORD-9999 is not the customer's, so no refund is created for it.
-    expect(env.repo.getRefundsByOrder("ORD-9999")).toHaveLength(0);
+    expect(await env.repo.getRefundsByOrder("ORD-9999")).toHaveLength(0);
   });
 });

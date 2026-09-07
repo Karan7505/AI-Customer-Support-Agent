@@ -41,7 +41,7 @@ export interface AuditContext {
 
 export function createAuditor(repo: Repo) {
   return {
-    log(
+    async log(
       ctx: AuditContext,
       action: string,
       opts: {
@@ -50,7 +50,7 @@ export function createAuditor(repo: Repo) {
         result?: unknown;
       } = {},
     ) {
-      repo.addAudit({
+      await repo.addAudit({
         actorId: ctx.actor.id,
         actorRole: ctx.actor.role,
         action,

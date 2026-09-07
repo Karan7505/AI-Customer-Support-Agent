@@ -33,6 +33,19 @@ export const APPROVAL_STATUS: Record<string, StatusMeta> = {
   expired: { label: "Expired", tone: "neutral" },
 };
 
+export const TICKET_STATUS: Record<string, StatusMeta> = {
+  open: { label: "Open", tone: "warn" },
+  in_progress: { label: "In progress", tone: "info" },
+  resolved: { label: "Resolved", tone: "success" },
+  closed: { label: "Closed", tone: "neutral" },
+};
+
+export const TICKET_PRIORITY: Record<string, StatusMeta> = {
+  low: { label: "Low", tone: "neutral" },
+  medium: { label: "Medium", tone: "info" },
+  high: { label: "High", tone: "danger" },
+};
+
 export const RISK_META: Record<string, StatusMeta> = {
   low: { label: "Low risk", tone: "neutral" },
   medium: { label: "Medium risk", tone: "info" },

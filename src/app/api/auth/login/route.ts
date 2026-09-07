@@ -10,7 +10,7 @@ export async function POST(req: Request) {
   try {
     const body = LoginBody.parse(await req.json());
     const { repo } = deps();
-    const { principal, token, expiresAt } = login(repo, body.email, body.password);
+    const { principal, token, expiresAt } = await login(repo, body.email, body.password);
     const res = json({
       ok: true,
       user: { id: principal.id, name: principal.name, email: principal.email, role: principal.role },

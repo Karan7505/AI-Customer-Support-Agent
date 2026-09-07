@@ -207,6 +207,9 @@ function Header({ user, onLogout }: { user: any; onLogout: () => void }) {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {(user.role === "admin" || user.role === "support_agent") && (
+            <Link href="/support" className="btn-ghost text-xs">Support desk</Link>
+          )}
           {user.role === "admin" && <Link href="/admin" className="btn-ghost text-xs">Admin</Link>}
           <button className="btn-ghost text-xs" onClick={onLogout}>Sign out</button>
         </div>

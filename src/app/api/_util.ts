@@ -1,11 +1,10 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import { getDb } from "@/db/client";
-import { createRepo } from "@/db/repos";
 import { AppError } from "@/lib/errors";
 import { getPrincipal, SESSION_COOKIE } from "@/lib/auth";
+import { logRuntimeMode } from "@/lib/env";
 import type { Principal } from "@/lib/types";
-import type { Repo } from "@/db/repos";
+import { getRepo, type Repo } from "@/db/repos";
 
 export function json(data: unknown, init?: { status?: number }) {
   return NextResponse.json(data, { status: init?.status ?? 200 });
@@ -31,23 +30,25 @@ export function httpError(e: unknown): NextResponse {
   );
 }
 
-/** Repo for the current request (all routes use the same sqlite handle). */
+/** Repo for the current request (shared handle; SQLite or Postgres by env). */
 export function deps(): { repo: Repo } {
-  return { repo: createRepo(getDb()) };
+  logRuntimeMode();
+  return { repo: getRepo() };
 }
 
 export async function currentPrincipal(): Promise<Principal | null> {
   const store = await cookies();
   const token = store.get(SESSION_COOKIE)?.value;
   const { repo } = deps();
-  return getPrincipal(repo, token);
+  return await getPrincipal(repo, token);
 }
 
 export function setSessionCookie(response: NextResponse, token: string, expiresAt: number) {
   response.cookies.set(SESSION_COOKIE, token, {
     httpOnly: true,
     sameSite: "lax",
-    secure: false, // local http demo; set true in production https
+    // Secure cookies only make sense over HTTPS; keep local http usable.
+    secure: process.env.NODE_ENV === "production",
     path: "/",
     expires: new Date(expiresAt),
   });
@@ -58,7 +59,7 @@ export function clearSessionCookie(response: NextResponse) {
   response.cookies.set(SESSION_COOKIE, "", {
     httpOnly: true,
     sameSite: "lax",
-    secure: false,
+    secure: process.env.NODE_ENV === "production",
     path: "/",
     maxAge: 0,
   });

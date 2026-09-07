@@ -36,6 +36,21 @@ body {
     @apply w-full rounded-lg border border-surface-line bg-white/5 px-3 py-2 text-sm text-slate-100
       placeholder:text-slate-500 focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent;
   }
+
+  /* Native <select> popups are painted with the OS theme and can fall back to a
+     white background with the inherited light text (near-invisible). Force the
+     app's dark palette on the options so dropdowns stay readable. */
+  select.input {
+    color-scheme: dark;
+  }
+  select.input option {
+    background-color: #161932;
+    color: #e2e8f0;
+  }
+  select.input option:checked {
+    background-color: #4a53b0;
+    color: #ffffff;
+  }
   .chip {
     @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium;
   }

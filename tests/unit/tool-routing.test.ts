@@ -33,7 +33,7 @@ describe("Tool routing", () => {
       expect((res.data as any).approvalId).toMatch(/^APR-/);
     }
     // No completed refund exists yet.
-    const refunds = env.repo.getRefundsByOrder("ORD-1");
+    const refunds = await env.repo.getRefundsByOrder("ORD-1");
     expect(refunds.filter((r) => r.status === "completed")).toHaveLength(0);
   });
 });

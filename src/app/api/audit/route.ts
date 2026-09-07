@@ -12,7 +12,7 @@ export async function GET(req: Request) {
     const url = new URL(req.url);
     const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "100", 10) || 100, 500);
     const { repo } = deps();
-    const rows = repo.listAudit({ limit });
+    const rows = await repo.listAudit({ limit });
     const items = rows.map((r) => ({
       id: r.id,
       actorId: r.actorId,

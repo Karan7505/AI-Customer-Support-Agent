@@ -1,10 +1,10 @@
 import type { ApprovalRequest } from "@/lib/types";
 
 /** Add human-readable context (customer name, order summary) to an approval view. */
-export function withContext(repo: any, _auditor: any, ap: ApprovalRequest) {
-  const requester = repo.principalOf(ap.requestedBy);
-  const approver = ap.approvedBy ? repo.principalOf(ap.approvedBy) : null;
-  const order = ap.orderId ? repo.getOrder(ap.orderId) : null;
+export async function withContext(repo: any, _auditor: any, ap: ApprovalRequest) {
+  const requester = await repo.principalOf(ap.requestedBy);
+  const approver = ap.approvedBy ? await repo.principalOf(ap.approvedBy) : null;
+  const order = ap.orderId ? await repo.getOrder(ap.orderId) : null;
   return {
     ...ap,
     requestedByName: requester?.name ?? ap.requestedBy,

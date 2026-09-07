@@ -10,8 +10,8 @@ export async function GET() {
     const principal = await currentPrincipal();
     if (!principal) throw Errors.unauthorized();
     const { repo } = deps();
-    const conv = repo.getOrCreateConversation(principal.id);
-    const messages = repo.listMessages(conv.id).map((m) => ({
+    const conv = await repo.getOrCreateConversation(principal.id);
+    const messages = (await repo.listMessages(conv.id)).map((m) => ({
       id: m.id,
       role: m.role,
       content: m.content,

@@ -17,12 +17,11 @@ export async function GET() {
     if (!principal) throw Errors.unauthorized();
     const { repo } = deps();
 
-    const approvals = repo
-      .listApprovals({ limit: 200 })
+    const approvals = (await repo.listApprovals({ limit: 200 }))
       .filter((a) => a.requestedBy === principal.id)
       .map(mapApproval);
 
-    const refunds = repo.getRefundsByCustomer(principal.id).map(mapRefund);
+    const refunds = (await repo.getRefundsByCustomer(principal.id)).map(mapRefund);
     const pending = approvals.filter((a) => a.status === "pending_approval");
 
     return json({

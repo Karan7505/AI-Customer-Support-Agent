@@ -28,7 +28,7 @@ export default function LoginPage() {
         method: "POST",
         body: JSON.stringify({ email, password }),
       });
-      router.push(res.user.role === "admin" ? "/admin" : res.user.role === "support_agent" ? "/chat" : "/chat");
+      router.push(res.user.role === "admin" ? "/admin" : res.user.role === "support_agent" ? "/support" : "/chat");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
     } finally {
