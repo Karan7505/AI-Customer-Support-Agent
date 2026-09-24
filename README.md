@@ -405,11 +405,44 @@ completed, failed` — clearly distinguished in the UI.
 
 ## Observability & audit
 
-Every significant action writes an audit entry (actor id + role, action, tool,
-requested arguments — secret-redacted — result, approval id, conversation id,
-timestamp) so you can reconstruct: *who requested it, what, was approval required,
-who approved, what was executed, did it succeed.* The admin console has an audit
-tab.
+**Structured logging.** All server logs are emitted as one-line JSON
+(`src/lib/logger.ts`) with level, message, correlation id (`corr`) and
+structured fields. API requests carry an `X-Request-Id` — a valid incoming
+header is honored, otherwise one is generated — and echoed back in the
+response. Agent turns, LLM plans, tool executions, approval decisions and
+refund executions all log start/end with durations and outcomes.
+`LOG_LEVEL` (error|warn|info|debug, default `info`) and `LOG_FORMAT`
+(json|pretty) control output.
+
+**Metrics.** `src/lib/metrics.ts` exposes Prometheus metrics on a
+**localhost-only** port (internal by design):
+
+```bash
+curl http://127.0.0.1:9090/metrics
+```
+
+Key series: `http_requests_total{method,path,status}`,
+`http_request_duration_seconds`, `llm_requests_total{model,status}`,
+`llm_request_duration_seconds`, `database_query_duration_seconds{operation}`,
+`chat_requests_total{result}`, `refund_requests_total{status}`,
+`approval_requests_total{outcome}`, `approval_decisions_total{decision}`,
+`approval_queue_length`, `audit_write_duration_seconds`.
+Disabled with `METRICS_ENABLED=false`; port via `METRICS_PORT` (default 9090).
+
+**Health checks.**
+- `GET /health/live` — process is up (always 200 when the server answers).
+- `GET /health/ready` — 200 when the database is reachable, 503 when it is
+  down. LLM/Redis/Stripe are best-effort: they mark the app `degraded` but
+  never block readiness (mock LLM mode is a valid steady state). Probes are
+  cached for `HEALTH_CHECK_INTERVAL_MS` (default 30000; 0 disables caching).
+
+**Audit trail.** Every significant action writes an audit entry (actor id +
+role, action, tool, requested arguments — secret-redacted — result, approval
+id, conversation id, timestamp) so you can reconstruct: *who requested it,
+what, was approval required, who approved, what was executed, did it succeed.*
+Entries are enriched with `status` (success|failure), `duration_ms` and a
+`metadata` payload (migration `002_audit_enrichment`). The admin console has
+an audit tab; `GET /api/audit` (admin) returns the enriched fields.
 
 ---
 
@@ -427,31 +460,38 @@ src/
       chat/history/route.ts   # conversation history
       approvals/route.ts      # list approvals (admin/support)
       approvals/[id]/decision # approve/reject (admin) → executes on approve
-      status/route.ts         # customer's own approvals/refunds
-      audit/route.ts          # full audit trail (admin)
-  db/
-    schema.ts                 # SQLite schema (drizzle)
-    schema.pg.ts              # Postgres/Supabase schema (drizzle)
-    row-types.ts              # shared row shapes (driver-agnostic)
-    client.ts                 # connection: getDb() [SQLite] / getPostgresDb() [PG]
-    repos.ts                  # async Repo: createSqliteRepo + createPostgresRepo + getRepo()
-    migrate.ts                # applies schema (SQLite or Postgres by DATABASE_URL)
-    seed.ts                   # driver-agnostic seed
-  lib/
-    env.ts                    # config + runtime mode detection + startup banner
-    agent.ts                  # controlled tool-calling loop
-    llm.ts llm-factory.ts     # LlmClient interface + auto-selecting factory
-    mock.ts                   # deterministic offline planner (default)
-    openai.ts                 # OpenAI-compatible planner (auto when key set)
-    policy.ts                 # getRiskLevel, authorize, visibleToolsFor
-    refunds.ts                # eligibility + idempotency keys
-    refund-execution.ts       # transactional process_refund
-    approvals.ts              # state machine + create/decide/execute
-    tools.ts                  # tool registry + runTool
+       status/route.ts         # customer's own approvals/refunds
+       audit/route.ts          # full audit trail (admin)
+       _util.ts                # shared deps()/auth/apiRequest wrapper
+      health/{live,ready}/route.ts  # liveness + readiness probes
+   db/
+     schema.ts                 # SQLite schema (drizzle)
+     schema.pg.ts              # Postgres/Supabase schema (drizzle)
+     row-types.ts              # shared row shapes (driver-agnostic)
+     client.ts                 # connection: getDb() [SQLite] / getPostgresDb() [PG]
+     repos.ts                  # async Repo: createSqliteRepo + createPostgresRepo + getRepo()
+     migrate.ts                # applies schema (SQLite or Postgres by DATABASE_URL)
+     seed.ts                   # driver-agnostic seed
+     migration-runner.ts       # versioned migration runner (sqlite + pg, checksums)
+   lib/
+     env.ts                    # config + runtime mode detection + startup banner
+     agent.ts                  # controlled tool-calling loop
+     llm.ts llm-factory.ts     # LlmClient interface + auto-selecting factory
+     mock.ts                   # deterministic offline planner (default)
+     openai.ts                 # OpenAI-compatible planner (auto when key set)
+     policy.ts                 # getRiskLevel, authorize, visibleToolsFor
+     refunds.ts                # eligibility + idempotency keys
+     refund-execution.ts       # transactional process_refund
+     approvals.ts              # state machine + create/decide/execute
+     tools.ts                  # tool registry + runTool
+     audit.ts                  # Auditor (secret-redacted, enriched entries)
+     logger.ts                 # structured JSON logging + correlation ids
+     metrics.ts                # Prometheus metrics + localhost exporter
+     health.ts                 # readiness probing (db/llm/redis/stripe)
      schemas.ts                # Zod input/output schemas
      knowledge.ts              # FAQ/KB with citations
-     auth.ts security.ts ids.ts audit.ts errors.ts types.ts util.ts
-  migrations/                   # versioned migrations: 001_initial.sql / .pg.sql
+      auth.ts security.ts ids.ts errors.ts types.ts util.ts
+   migrations/                   # versioned: 001_initial, 002_audit_enrichment (.sql/.pg.sql)
   .db/schema.sql                # legacy SQLite DDL (superseded by migrations/)
   .db/schema.pg.sql             # legacy Postgres DDL (superseded by migrations/)
  images/                       # README screenshots
@@ -480,6 +520,13 @@ the app runs with **no** variables set.
 | `APPROVAL_TTL_HOURS` | no | `72` | How long a pending approval stays actionable. |
 | `CHAT_TURNS_PER_WINDOW` | no | `60` | Per-customer chat turn cap (rate limit). |
 | `CHAT_WINDOW_MS` | no | `600000` | Chat rate-limit window in ms. |
+| `LOG_LEVEL` | no | `info` | Log level: error \| warn \| info \| debug. |
+| `LOG_FORMAT` | no | json/pretty | `json` (one-line, log-shippers) or `pretty` (dev). |
+| `METRICS_ENABLED` | no | `true` | Serve `/metrics` on `127.0.0.1:METRICS_PORT`. |
+| `METRICS_PORT` | no | `9090` | Metrics exporter port (localhost-only). |
+| `HEALTH_CHECK_INTERVAL_MS` | no | `30000` | `/health/ready` probe cache TTL; 0 disables caching. |
+| `REDIS_URL` | no | — | If set, probed by readiness (degraded, never blocking). |
+| `STRIPE_SECRET_KEY` | no | — | If set, probed by readiness (degraded, never blocking). Never commit. |
 
 The mode banner (see [Runtime modes](#runtime-modes--how-it-auto-switches)) shows
 which values took effect, without ever printing the key or URL themselves.

@@ -1,6 +1,7 @@
 import type { Repo } from "@/db/repos";
 import type { Principal } from "./types";
 import { nowMs } from "./util";
+import { recordAuditWrite } from "./metrics";
 
 /**
  * Audit logging. Every significant action produces an entry that lets you
@@ -48,8 +49,15 @@ export function createAuditor(repo: Repo) {
         toolName?: string | null;
         arguments?: unknown;
         result?: unknown;
+        /** Observability (blueprint §10.4): outcome of the audited operation. */
+        status?: "success" | "failure";
+        /** Duration of the audited operation, in milliseconds. */
+        durationMs?: number;
+        /** Free-form JSON context (provider ids, iteration counts, ...). */
+        metadata?: unknown;
       } = {},
     ) {
+      const t0 = nowMs();
       await repo.addAudit({
         actorId: ctx.actor.id,
         actorRole: ctx.actor.role,
@@ -57,10 +65,14 @@ export function createAuditor(repo: Repo) {
         toolName: opts.toolName ?? null,
         arguments: opts.arguments === undefined ? undefined : redact(opts.arguments),
         result: opts.result === undefined ? undefined : redact(opts.result),
+        status: opts.status ?? null,
+        durationMs: opts.durationMs ?? null,
+        metadata: opts.metadata === undefined ? undefined : redact(opts.metadata),
         approvalId: ctx.approvalId ?? null,
         conversationId: ctx.conversationId ?? null,
         timestamp: nowMs(),
       });
+      recordAuditWrite(nowMs() - t0);
     },
   };
 }

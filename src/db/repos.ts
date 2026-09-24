@@ -24,6 +24,12 @@ import type { Order, OrderItem, Principal, ShippingAddress } from "@/lib/types";
  * (Supabase, when DATABASE_URL is set) implement it identically.
  */
 
+/** Serialize an audit `metadata` value: pass strings through, stringify objects. */
+function jsonCol(v: unknown): string | null {
+  if (v === undefined || v === null) return null;
+  return typeof v === "string" ? v : JSON.stringify(v);
+}
+
 function mapOrder(row: OrderRow): Order {
   return {
     id: row.id,
@@ -106,6 +112,7 @@ export interface Repo {
   addAudit: (e: {
     actorId: string; actorRole: string; action: string; toolName?: string | null; arguments?: unknown;
     result?: unknown; approvalId?: string | null; conversationId?: string | null; timestamp?: number;
+    metadata?: unknown; status?: "success" | "failure" | null; durationMs?: number | null;
   }) => Promise<AuditLogRow>;
   listAudit: (filter?: { actorId?: string; toolName?: string; limit?: number }) => Promise<AuditLogRow[]>;
 
@@ -264,6 +271,7 @@ export function createSqliteRepo(db: AppDatabase): Repo {
         arguments: e.arguments === undefined ? null : JSON.stringify(e.arguments),
         result: e.result === undefined ? null : JSON.stringify(e.result),
         approvalId: e.approvalId ?? null, conversationId: e.conversationId ?? null, timestamp: e.timestamp ?? Date.now(),
+        metadata: jsonCol(e.metadata), status: e.status ?? null, durationMs: e.durationMs ?? null,
       }).returning().get();
       return row as AuditLogRow;
     },
@@ -534,6 +542,7 @@ export function createPostgresRepo(db: PgDatabase): Repo {
         arguments: e.arguments === undefined ? null : JSON.stringify(e.arguments),
         result: e.result === undefined ? null : JSON.stringify(e.result),
         approvalId: e.approvalId ?? null, conversationId: e.conversationId ?? null, timestamp: e.timestamp ?? Date.now(),
+        metadata: jsonCol(e.metadata), status: e.status ?? null, durationMs: e.durationMs ?? null,
       });
       // Return a best-effort row (id is a serial); not read back for correctness.
       return (await pgOne(db.select().from(pg.auditLogs).where(eq(pg.auditLogs.approvalId, e.approvalId ?? "")))) ?? ({} as AuditLogRow);

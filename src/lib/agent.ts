@@ -1,9 +1,11 @@
 import type { Repo } from "@/db/repos";
-import { buildSystemPrompt, type LlmClient, type LlmMessage } from "./llm";
+import { buildSystemPrompt, type LlmClient, type LlmMessage, type LlmPlan } from "./llm";
 import { agentMaxIterations } from "./env";
 import { authorize, getRiskLevel, visibleToolsFor } from "./policy";
 import { runTool, toolSchemaFor } from "./tools";
 import { createAuditor, type Auditor } from "./audit";
+import { logger } from "./logger";
+import { recordLlmCall, chatRequestsTotal } from "./metrics";
 import { nowMs } from "./util";
 import type { AgentCard, AgentEvent, Principal, ToolResult } from "./types";
 
@@ -38,6 +40,8 @@ export function createAgent(repo: Repo, llm: LlmClient) {
 
   async function runTurn(input: AgentTurnInput): Promise<AgentTurnResult> {
     const { principal, userText } = input;
+    const t0 = nowMs();
+    logger.info("agent turn start", { role: principal.role, userTextLen: userText.length });
     const events: AgentEvent[] = [];
     const maxIter = agentMaxIterations();
 
@@ -73,9 +77,21 @@ export function createAgent(repo: Repo, llm: LlmClient) {
     let finalCards: AgentCard[] = [];
     let structured: Record<string, unknown> | undefined;
     let finalized = false;
+    let iterations = 0;
 
     for (let i = 0; i < maxIter; i++) {
-      const plan = await llm.plan(llmMessages, tools);
+      iterations = i + 1;
+      const planT0 = nowMs();
+      let plan: LlmPlan;
+      try {
+        plan = await llm.plan(llmMessages, tools);
+        recordLlmCall(llm.model, "success", nowMs() - planT0);
+      } catch (e) {
+        recordLlmCall(llm.model, "error", nowMs() - planT0);
+        logger.error("llm plan failed", { model: llm.model, durationMs: nowMs() - planT0, error: e });
+        throw e;
+      }
+      logger.debug("llm plan", { model: llm.model, durationMs: nowMs() - planT0, kind: plan.kind });
 
       if (plan.kind === "final") {
         finalText = plan.text;
@@ -97,7 +113,8 @@ export function createAgent(repo: Repo, llm: LlmClient) {
         const err = { ok: false, error: { code: "TOOL_ERROR", message: `Unknown tool: ${toolName}` } } as ToolResult;
         events.push({ type: "tool_result", toolName, result: err });
         appendToolMsg(llmMessages, toolName, JSON.stringify(err), i);
-        await auditor.log({ actor: principal, conversationId }, "tool.rejected_unknown", { toolName, arguments: args });
+        logger.warn("tool rejected (unknown)", { tool: toolName, role: principal.role });
+        await auditor.log({ actor: principal, conversationId }, "tool.rejected_unknown", { toolName, arguments: args, status: "failure", metadata: { reason: "unknown_tool" } });
         continue;
       }
 
@@ -110,6 +127,7 @@ export function createAgent(repo: Repo, llm: LlmClient) {
         } as ToolResult;
         events.push({ type: "tool_result", toolName, result: err });
         appendToolMsg(llmMessages, toolName, JSON.stringify(err), i);
+        logger.debug("tool rejected (duplicate call in turn)", { tool: toolName });
         continue;
       }
       calledOnce.add(dedupeKey);
@@ -119,18 +137,20 @@ export function createAgent(repo: Repo, llm: LlmClient) {
       let result: ToolResult;
       if (!perm.allowed) {
         result = { ok: false, error: { code: "FORBIDDEN", message: perm.reason ?? "Not authorized." } };
+        logger.warn("tool rejected (forbidden)", { tool: toolName, role: principal.role, reason: perm.reason });
         await auditor.log(
           { actor: principal, conversationId },
           "tool.authorized_no",
-          { toolName, arguments: args, result: { reason: perm.reason } },
+          { toolName, arguments: args, result: { reason: perm.reason }, status: "failure", metadata: { reason: "forbidden" } },
         );
       } else {
         const risk = getRiskLevel(toolName, args, principal);
         await auditor.log(
           { actor: principal, conversationId },
           "tool.authorized_yes",
-          { toolName, arguments: args, result: { risk } },
+          { toolName, arguments: args, result: { risk }, status: "success", metadata: { risk } },
         );
+        const toolT0 = nowMs();
         try {
           result = await runTool(
             { repo, auditor, principal, conversationId },
@@ -140,6 +160,9 @@ export function createAgent(repo: Repo, llm: LlmClient) {
         } catch (e) {
           result = toToolError(e);
         }
+        const toolMs = nowMs() - toolT0;
+        if (result.ok) logger.debug("tool executed", { tool: toolName, risk, durationMs: toolMs });
+        else logger.warn("tool execution failed", { tool: toolName, code: result.error?.code, durationMs: toolMs });
       }
 
       // Emit domain events so the UI can render cards/statuses accurately.
@@ -172,9 +195,15 @@ export function createAgent(repo: Repo, llm: LlmClient) {
       meta,
       createdAt: nowMs(),
     });
+    const turnMs = nowMs() - t0;
     await auditor.log({ actor: principal, conversationId }, "agent.turn_complete", {
       result: { iterationsUsed: calledOnce.size + 1, finalText: finalText.slice(0, 200) },
+      status: finalized ? "success" : "failure",
+      durationMs: turnMs,
+      metadata: { iterations, toolCalls: calledOnce.size, finalized },
     });
+    chatRequestsTotal.inc({ result: finalized ? "success" : "max_iterations" });
+    logger.info("agent turn complete", { role: principal.role, iterations, toolCalls: calledOnce.size, durationMs: turnMs, finalized });
 
     return { assistantText: finalText, cards: finalCards, structured, events };
   }

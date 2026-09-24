@@ -1,18 +1,35 @@
-import { pgTable, text, integer, serial, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, serial, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
 
-/**
- * Postgres/Supabase schema (used when DATABASE_URL is set).
- * Column names are camelCase so $inferSelect maps directly onto the shared
- * row types in ./row-types. Monetary values are integer cents; timestamps are
- * epoch milliseconds. Mirrors the SQLite schema in ./schema.
- */
+export const ROLE_CUSTOMER = "customer";
+export const ROLE_SUPPORT_AGENT = "support_agent";
+export const ROLE_ADMIN = "admin";
+
+export const ORDER_STATUS = ["pending", "processing", "shipped", "delivered", "refunded", "cancelled"] as const;
+export type OrderStatus = (typeof ORDER_STATUS)[number];
+
+export const REFUND_STATUS = [
+  "requested",
+  "pending_approval",
+  "approved",
+  "rejected",
+  "processing",
+  "completed",
+  "failed",
+] as const;
+export type RefundStatus = (typeof REFUND_STATUS)[number];
+
+export const TICKET_STATUS = ["open", "in_progress", "resolved", "closed"] as const;
+export type TicketStatus = (typeof TICKET_STATUS)[number];
+
+export const TICKET_PRIORITY = ["low", "medium", "high", "urgent"] as const;
+export type TicketPriority = (typeof TICKET_PRIORITY)[number];
 
 export const customers = pgTable("customers", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
   email: text("email").notNull().unique(),
   passwordHash: text("passwordHash").notNull(),
-  role: text("role").notNull().default("customer"),
+  role: text("role").notNull().default(ROLE_CUSTOMER),
   createdAt: integer("createdAt").notNull(),
 });
 
@@ -44,7 +61,6 @@ export const supportTickets = pgTable(
     description: text("description").notNull(),
     priority: text("priority").notNull().default("medium"),
     status: text("status").notNull().default("open"),
-    /** JSON array of {author, authorRole, content, at} — agent handling thread. */
     internalNotes: text("internalNotes"),
     createdAt: integer("createdAt").notNull(),
     updatedAt: integer("updatedAt").notNull(),
@@ -62,14 +78,11 @@ export const refunds = pgTable(
     reason: text("reason").notNull(),
     status: text("status").notNull().default("requested"),
     approvalId: text("approvalId"),
-    idempotencyKey: text("idempotencyKey"),
+    idempotencyKey: text("idempotencyKey").unique(),
     createdAt: integer("createdAt").notNull(),
     processedAt: integer("processedAt"),
   },
-  (t) => [
-    index("idx_refunds_order").on(t.orderId),
-    uniqueIndex("uq_refunds_idempotency").on(t.idempotencyKey),
-  ],
+  (t) => [index("idx_refunds_order").on(t.orderId)],
 );
 
 export const approvalRequests = pgTable(
@@ -94,7 +107,7 @@ export const approvalRequests = pgTable(
   (t) => [index("idx_approvals_status").on(t.status)],
 );
 
-// NOTE: "arguments"/"result" are fine as identifiers in Postgres (not reserved).
+// NOTE: "arguments"/"result" are fine as identifiers in PG (not reserved).
 export const auditLogs = pgTable("audit_logs", {
   id: serial("id").primaryKey(),
   actorId: text("actorId").notNull(),
@@ -106,6 +119,9 @@ export const auditLogs = pgTable("audit_logs", {
   approvalId: text("approvalId"),
   conversationId: text("conversationId"),
   timestamp: integer("timestamp").notNull(),
+  metadata: jsonb("metadata"),
+  status: text("status"),
+  durationMs: integer("durationMs"),
 });
 
 export const sessions = pgTable("sessions", {
@@ -138,15 +154,3 @@ export const messages = pgTable(
   },
   (t) => [index("idx_messages_conv").on(t.conversationId)],
 );
-
-export const pgSchema = {
-  customers,
-  orders,
-  supportTickets,
-  refunds,
-  approvalRequests,
-  auditLogs,
-  sessions,
-  conversations,
-  messages,
-};

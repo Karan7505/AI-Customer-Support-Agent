@@ -12,9 +12,9 @@ const LLM_REQUEST_TIMEOUT_MS = 60_000;
  */
 export class OpenAiLlmClient implements LlmClient {
   readonly provider = "openai" as const;
+  readonly model: string;
   private apiKey: string;
   private baseUrl: string;
-  private model: string;
 
   constructor() {
     this.apiKey = process.env.OPENAI_API_KEY ?? "";

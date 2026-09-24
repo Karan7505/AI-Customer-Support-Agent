@@ -92,6 +92,15 @@ export interface AuditLogRow {
   approvalId: string | null;
   conversationId: string | null;
   timestamp: number;
+  /**
+   * Observability context (blueprint §10.4). Stored as TEXT on SQLite (a JSON
+   * string) and as JSONB on Postgres (postgres-js returns a parsed object),
+   * so the shared type is `unknown` — consumers parse/display, never query.
+   */
+  metadata: unknown;
+  /** "success" | "failure" | null (typed as string: null for driver-agnostic rows). */
+  status: string | null;
+  durationMs: number | null;
 }
 
 export interface SessionRow {

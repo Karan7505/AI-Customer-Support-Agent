@@ -1,11 +1,12 @@
-import { deps, json, currentPrincipal, httpError } from "../../_util";
+import { deps, json, currentPrincipal, httpError, apiRequest } from "../../_util";
 import { Errors } from "@/lib/errors";
 import { parseJson } from "@/lib/util";
 
 export const runtime = "nodejs";
 
 /** GET /api/chat/history - the signed-in principal's conversation messages. */
-export async function GET() {
+export async function GET(req: Request) {
+  return apiRequest(req, "GET", "/api/chat/history", async () => {
   try {
     const principal = await currentPrincipal();
     if (!principal) throw Errors.unauthorized();
@@ -22,4 +23,5 @@ export async function GET() {
   } catch (e) {
     return httpError(e);
   }
+  });
 }

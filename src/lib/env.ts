@@ -211,7 +211,28 @@ export function logRuntimeMode(): void {
       `[aurora]   Data:   ${c.db.padEnd(7)} ${dbDetail}`,
       `[aurora]   max tool iterations: ${c.agentMaxIterations}`,
       `[aurora]   (set OPENAI_API_KEY and/or DATABASE_URL to switch to real services)`,
-      `[aurora] ───────────────────────────────`,
+      "[aurora] ───────────────────────────────",
     ].join("\n"),
   );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Observability (blueprint §10)                                             */
+/* -------------------------------------------------------------------------- */
+
+/** Metrics exporter on a localhost-only port; disabled only on explicit false. */
+export function metricsEnabled(): boolean {
+  const v = (process.env.METRICS_ENABLED ?? "true").toLowerCase();
+  return v !== "false" && v !== "0" && v !== "no";
+}
+
+export function metricsPort(): number {
+  const n = parseInt(process.env.METRICS_PORT ?? "9090", 10);
+  return Number.isFinite(n) && n > 0 && n < 65536 ? n : 9090;
+}
+
+/** Readiness-probe cache TTL (blueprint: 30s default). 0 disables caching. */
+export function healthCheckIntervalMs(): number {
+  const n = parseInt(process.env.HEALTH_CHECK_INTERVAL_MS ?? "30000", 10);
+  return Number.isFinite(n) && n >= 0 ? n : 30000;
 }

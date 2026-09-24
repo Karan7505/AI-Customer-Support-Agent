@@ -694,6 +694,7 @@ function afterTool(messages: LlmMessage[]): LlmPlan {
 
 export class MockLlmClient implements LlmClient {
   readonly provider = "mock" as const;
+  readonly model = "mock" as const;
   async plan(messages: LlmMessage[], _tools: LlmTool[]): Promise<LlmPlan> {
     if (lastToolMsg(messages)) return afterTool(messages);
     return firstTurn(lastUserText(messages), messages);

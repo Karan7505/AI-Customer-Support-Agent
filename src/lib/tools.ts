@@ -305,7 +305,7 @@ const create_support_ticket: ToolSpec = {
     await ctx.auditor.log(
       { actor: ctx.principal, conversationId: ctx.conversationId },
       "ticket.created",
-      { toolName: "create_support_ticket", arguments: args, result: { ticketId: id } },
+      { toolName: "create_support_ticket", arguments: args, result: { ticketId: id }, status: "success" },
     );
     return { ok: true, data: { ticket } };
   },
@@ -337,7 +337,7 @@ const lookup_policy: ToolSpec = {
     await ctx.auditor.log(
       { actor: ctx.principal, conversationId: ctx.conversationId },
       "policy.lookup",
-      { toolName: "lookup_policy", arguments: { query }, result: { topic: ans.topic } },
+      { toolName: "lookup_policy", arguments: { query }, result: { topic: ans.topic }, status: "success" },
     );
     return { ok: true, data: { topic: ans.topic, text: ans.text, citation: ans.citation } };
   },
@@ -449,6 +449,8 @@ const request_refund: ToolSpec = {
         toolName: "request_refund",
         arguments: { orderId: order.id, amount: normalizedAmount, reason: args.reason },
         result: { approvalId: approval.id, refundId, status: "pending_approval" },
+        status: "success",
+        metadata: { orderId: order.id, amountCents: normalizedAmount },
       },
     );
 
@@ -600,6 +602,7 @@ const update_support_ticket: ToolSpec = {
         toolName: "update_support_ticket",
         arguments: args,
         result: { ticketId: ticket.id, status: ticket.status, note: args.note ?? null },
+        status: "success",
       },
     );
     return { ok: true, data: { ticket } };

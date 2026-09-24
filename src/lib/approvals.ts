@@ -3,6 +3,8 @@ import { genId } from "./ids";
 import { Errors } from "./errors";
 import { approvalTtlMs } from "./env";
 import { nowMs } from "./util";
+import { logger } from "./logger";
+import { approvalRequestsTotal, approvalDecisionsTotal, approvalQueueLength } from "./metrics";
 import type { ApprovalRequest, Principal, Refund } from "./types";
 import type { Auditor } from "./audit";
 import { executeRefund, mapRefund } from "./refund-execution";
@@ -57,6 +59,16 @@ export interface CreateApprovalOpts {
   conversationId?: string | null;
 }
 
+/** Refresh the pending-queue gauge (best-effort; metrics must never break flow). */
+async function refreshQueueGauge(repo: Repo): Promise<void> {
+  try {
+    const pending = await repo.listApprovals({ status: "pending_approval", limit: 200 });
+    approvalQueueLength.set(pending.length);
+  } catch {
+    /* metrics only */
+  }
+}
+
 /**
  * Create (or return the existing) approval request for a pending action.
  * Idempotent on a per-customer/per-order/per-action basis so re-asking does
@@ -67,16 +79,25 @@ export async function createApproval(
   auditor: Auditor,
   opts: CreateApprovalOpts,
 ): Promise<ApprovalRequest> {
-  const t = nowMs();
+  const t0 = nowMs();
   // Dedupe: reuse an existing pending approval for the same action+args.
   if (opts.idempotencyKey) {
     const existing = await repo.getPendingApprovalByIdempotencyKey(opts.idempotencyKey);
     if (existing) {
       const ap = mapApproval(existing);
+      approvalRequestsTotal.inc({ outcome: "reused" });
+      logger.info("approval request reused", { approvalId: ap.id, action: opts.toolName });
       await auditor.log(
         { actor: opts.requestedBy, conversationId: opts.conversationId, approvalId: ap.id },
         "approval.request_existing",
-        { toolName: opts.toolName, arguments: opts.arguments, result: { reused: ap.id } },
+        {
+          toolName: opts.toolName,
+          arguments: opts.arguments,
+          result: { reused: ap.id },
+          status: "success",
+          durationMs: nowMs() - t0,
+          metadata: { reused: true },
+        },
       );
       return ap;
     }
@@ -95,15 +116,25 @@ export async function createApproval(
     orderId: opts.orderId ?? null,
     amountCents: opts.amountCents ?? null,
     idempotencyKey: opts.idempotencyKey ?? null,
-    createdAt: t,
+    createdAt: t0,
   });
   const row = (await repo.getApproval(id))!;
   const ap = mapApproval(row);
+  approvalRequestsTotal.inc({ outcome: "created" });
+  logger.info("approval request created", { approvalId: ap.id, action: opts.toolName, riskLevel: opts.riskLevel });
   await auditor.log(
     { actor: opts.requestedBy, conversationId: opts.conversationId, approvalId: ap.id },
     "approval.created",
-    { toolName: opts.toolName, arguments: opts.arguments, result: { approvalId: ap.id, risk: ap.riskLevel } },
+    {
+      toolName: opts.toolName,
+      arguments: opts.arguments,
+      result: { approvalId: ap.id, risk: ap.riskLevel },
+      status: "success",
+      durationMs: nowMs() - t0,
+      metadata: { riskLevel: opts.riskLevel },
+    },
   );
+  await refreshQueueGauge(repo);
   return ap;
 }
 
@@ -130,6 +161,7 @@ export async function decideApproval(
   approver: Principal,
   opts: DecideOpts,
 ): Promise<ApprovalRequest> {
+  const t0 = nowMs();
   if (approver.role !== ROLE_ADMIN) {
     throw Errors.forbidden("Only an admin can approve or reject a request.");
   }
@@ -157,6 +189,8 @@ export async function decideApproval(
     await repo.updateRefund(linkedRefund.id, { status: "rejected" });
   }
   const updated = mapApproval((await repo.getApproval(current.id))!);
+  approvalDecisionsTotal.inc({ decision: to });
+  logger.info("approval decision", { approvalId: current.id, decision: to, durationMs: nowMs() - t0 });
   await auditor.log(
     { actor: approver, approvalId: current.id },
     opts.approve ? "approval.approved" : "approval.rejected",
@@ -164,8 +198,12 @@ export async function decideApproval(
       toolName: current.toolName,
       arguments: updated.arguments,
       result: { approved: opts.approve, reason: opts.reason ?? null },
+      status: "success",
+      durationMs: nowMs() - t0,
+      metadata: { decision: to },
     },
   );
+  await refreshQueueGauge(repo);
   return updated;
 }
 

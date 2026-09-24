@@ -34,6 +34,8 @@ export type LlmPlan =
 
 export interface LlmClient {
   readonly provider: "mock" | "openai";
+  /** Model identifier for metrics/logging (e.g. "mock", "gpt-4o-mini"). */
+  readonly model: string;
   plan(messages: LlmMessage[], tools: LlmTool[]): Promise<LlmPlan>;
 }
 

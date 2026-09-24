@@ -173,6 +173,9 @@ export const auditLogs = sqliteTable("audit_logs", {
   approvalId: text("approval_id"),
   conversationId: text("conversation_id"),
   timestamp: integer("timestamp").notNull(),
+  metadata: text("metadata"),
+  status: text("status"),
+  durationMs: integer("duration_ms"),
 });
 
 export const sessions = sqliteTable("sessions", {

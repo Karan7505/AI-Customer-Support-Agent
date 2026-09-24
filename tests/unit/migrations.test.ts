@@ -38,7 +38,7 @@ describe("Versioned migrations (sqlite)", () => {
 
   it("applies the base migration and records name/checksum/timestamp", () => {
     raw = fresh();
-    expect(runSqliteMigrations(raw)).toBe(1);
+    expect(runSqliteMigrations(raw)).toBe(2); // 001_initial + 002_audit_enrichment
     expect(tablesOf(raw).sort()).toEqual([...EXPECTED_TABLES, "migrations"].sort());
     const row = raw.prepare("SELECT name, checksum, applied_at FROM migrations").get() as any;
     expect(row.name).toBe(BASE);
@@ -50,7 +50,7 @@ describe("Versioned migrations (sqlite)", () => {
     raw = fresh();
     runSqliteMigrations(raw);
     expect(runSqliteMigrations(raw)).toBe(0);
-    expect((raw.prepare("SELECT COUNT(*) c FROM migrations").get() as any).c).toBe(1);
+    expect((raw.prepare("SELECT COUNT(*) c FROM migrations").get() as any).c).toBe(2);
   });
 
   it("refuses to run when an applied migration was modified (checksum mismatch)", () => {
@@ -64,13 +64,13 @@ describe("Versioned migrations (sqlite)", () => {
   it("refuses to run on invalid SQL and leaves the failed migration unapplied", () => {
     const db = fresh();
     raw = db;
-    const bad = path.join(migrationsDir(), "002_tmp_bad.sql");
-    runSqliteMigrations(db); // 001 applies while the directory is clean
+    const bad = path.join(migrationsDir(), "999_tmp_bad.sql");
+    runSqliteMigrations(db); // base migrations apply while the directory is clean
     fs.writeFileSync(bad, "CREATE TABLE no_such_syntax (;\n");
     try {
-      expect(() => runSqliteMigrations(db)).toThrow(); // 002 fails the run
+      expect(() => runSqliteMigrations(db)).toThrow(); // the bad 999 migration fails the run
       const names = (db.prepare("SELECT name FROM migrations").all() as any[]).map((r) => r.name);
-      expect(names).toEqual([BASE]); // failed migration NOT recorded → retriable
+      expect(names).toEqual([BASE, "002_audit_enrichment.sql"]); // failed migration NOT recorded → retriable
     } finally {
       if (fs.existsSync(bad)) fs.rmSync(bad);
     }

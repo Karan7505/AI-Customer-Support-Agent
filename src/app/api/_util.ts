@@ -3,11 +3,59 @@ import { NextResponse } from "next/server";
 import { AppError } from "@/lib/errors";
 import { getPrincipal, SESSION_COOKIE } from "@/lib/auth";
 import { logRuntimeMode } from "@/lib/env";
+import { newCorrelationId, runWithCorrelation, logger } from "@/lib/logger";
+import { recordHttpRequest, ensureMetricsServer } from "@/lib/metrics";
+import { nowMs } from "@/lib/util";
 import type { Principal } from "@/lib/types";
 import { getRepo, type Repo } from "@/db/repos";
 
 export function json(data: unknown, init?: { status?: number }) {
   return NextResponse.json(data, { status: init?.status ?? 200 });
+}
+
+/**
+ * Uniform request wrapper (blueprint §10.1/§10.2):
+ *  - correlation id: honours a client-supplied X-Request-Id (alphanumeric,
+ *    ≤64 chars) or generates one; propagated to every log line in the
+ *    request and echoed back in the X-Request-Id response header;
+ *  - structured request/response logging;
+ *  - http_requests_total + http_request_duration_seconds metrics;
+ *  - lazy start of the localhost /metrics server.
+ * The `path` argument is a STATIC label (e.g. "/api/tickets/:id"), never the
+ * raw URL, so metric label cardinality stays bounded.
+ */
+export async function apiRequest(
+  req: Request,
+  method: string,
+  path: string,
+  fn: () => Promise<Response>,
+): Promise<Response> {
+  ensureMetricsServer();
+  const header = (req.headers.get("x-request-id") ?? "").trim().slice(0, 64);
+  const corr = /^[A-Za-z0-9_-]+$/.test(header) ? header : newCorrelationId();
+  const t0 = nowMs();
+  let res: Response;
+  try {
+    res = await runWithCorrelation(corr, async () => {
+      logger.debug("http request", { method, path });
+      try {
+        return await fn();
+      } catch (e) {
+        return httpError(e);
+      }
+    });
+  } catch (e) {
+    res = httpError(e);
+  }
+  const durationMs = nowMs() - t0;
+  recordHttpRequest(method, path, res.status, durationMs);
+  logger.info("http response", { method, path, status: res.status, durationMs });
+  try {
+    res.headers.set("x-request-id", corr);
+  } catch {
+    /* locked headers — extremely rare; correlation still in logs */
+  }
+  return res;
 }
 
 export function httpError(e: unknown): NextResponse {

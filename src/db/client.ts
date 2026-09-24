@@ -14,11 +14,11 @@ export type PgDatabase = PostgresJsDatabase<typeof pgSchema>;
 
 /** Returns the SQLite file path from env, defaulting to ./data/app.db. */
 export function resolveDbPath(): string {
-  const raw = process.env.DATABASE_PATH || "./data/app.db";
+  const raw = (process.env.DATABASE_PATH || "./data/app.db").trim();
+  // ":memory:" is a valid DATABASE_PATH (tests pin it) and must not be resolved.
+  if (raw === ":memory:") return raw;
   const p = path.resolve(raw);
-  if (p !== ":memory:") {
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-  }
+  fs.mkdirSync(path.dirname(p), { recursive: true });
   return p;
 }
 
@@ -38,13 +38,17 @@ function applyMigrations(db: Database.Database): void {
 
 /**
  * Apply the base schema DDL (tests / in-memory databases). Idempotent.
- * The canonical base DDL is migrations/001_initial.sql — the same file the
- * versioned runner applies at boot, so tests and the server never drift.
+ * The canonical DDL is the versioned migration files — the same SQL the
+ * server's runner applies, so test databases never drift from production.
+ * (The runner additionally records checksums in a `migrations` table.)
  */
 export function applySchema(db: Database.Database): void {
-  const sqlFile = path.join(migrationsDir(), "001_initial.sql");
-  const sql = fs.readFileSync(sqlFile, "utf8");
-  db.exec(sql);
+  const dir = migrationsDir();
+  const files = fs
+    .readdirSync(dir)
+    .filter((f) => /^\d+_.*\.sql$/.test(f) && !f.endsWith(".pg.sql"))
+    .sort();
+  for (const f of files) db.exec(fs.readFileSync(path.join(dir, f), "utf8"));
   applyMigrations(db);
 }
 
