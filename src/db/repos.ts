@@ -58,7 +58,17 @@ export interface Repo {
   // customers
   getCustomer: (id: string) => Promise<CustomerRow | undefined>;
   getCustomerByEmail: (email: string) => Promise<CustomerRow | undefined>;
-  createCustomer: (c: { id: string; name: string; email: string; passwordHash: string; role: string; createdAt: number }) => Promise<void>;
+  createCustomer: (c: {
+    id: string; name: string; email: string; passwordHash: string; role: string; createdAt: number;
+    emailVerified?: number; emailVerificationToken?: string | null; emailVerificationSentAt?: number | null;
+    emailResetToken?: string | null; emailResetSentAt?: number | null; deactivatedAt?: number | null;
+  }) => Promise<void>;
+  /** Partial lifecycle update (password, verification/reset tokens, deactivation). */
+  updateCustomer: (id: string, patch: Partial<Pick<CustomerRow,
+    "passwordHash" | "emailVerified" | "emailVerificationToken" | "emailVerificationSentAt" |
+    "emailResetToken" | "emailResetSentAt" | "deactivatedAt">>) => Promise<void>;
+  getCustomerByVerificationToken: (token: string) => Promise<CustomerRow | undefined>;
+  getCustomerByResetToken: (token: string) => Promise<CustomerRow | undefined>;
   listStaff: () => Promise<CustomerRow[]>;
   searchCustomers: (query: string, limit?: number) => Promise<CustomerRow[]>;
 
@@ -120,9 +130,13 @@ export interface Repo {
   listAudit: (filter?: { actorId?: string; toolName?: string; limit?: number }) => Promise<AuditLogRow[]>;
 
   // sessions
-  createSession: (t: { token: string; customerId: string; createdAt: number; expiresAt: number }) => Promise<void>;
+  createSession: (t: { token: string; customerId: string; createdAt: number; expiresAt: number; lastActivityAt?: number }) => Promise<void>;
   getSession: (token: string) => Promise<SessionRow | undefined>;
   revokeSession: (token: string) => Promise<void>;
+  /** Bounded-cadence last-activity update (best-effort; must not throw to caller). */
+  touchSession: (token: string, at: number) => Promise<void>;
+  /** Rotate/kill all sessions for a customer (password change, deactivation). */
+  revokeAllSessionsForCustomer: (customerId: string) => Promise<void>;
 
   // conversations / messages
   getOrCreateConversation: (customerId: string) => Promise<ConversationRow>;
@@ -153,10 +167,23 @@ export function createSqliteRepo(db: AppDatabase): Repo {
     getCustomerByEmail: async (email) =>
       await db.select().from(s.customers).where(eq(s.customers.email, email.toLowerCase())).get(),
     createCustomer: async (c) => {
-      await db.insert(s.customers)
-        .values({ id: c.id, name: c.name, email: c.email, passwordHash: c.passwordHash, role: c.role, createdAt: c.createdAt })
-        .run();
+      await db.insert(s.customers).values({
+        id: c.id, name: c.name, email: c.email, passwordHash: c.passwordHash, role: c.role, createdAt: c.createdAt,
+        emailVerified: c.emailVerified ?? 1,
+        emailVerificationToken: c.emailVerificationToken ?? null,
+        emailVerificationSentAt: c.emailVerificationSentAt ?? null,
+        emailResetToken: c.emailResetToken ?? null,
+        emailResetSentAt: c.emailResetSentAt ?? null,
+        deactivatedAt: c.deactivatedAt ?? null,
+      }).run();
     },
+    updateCustomer: async (id, patch) => {
+      await db.update(s.customers).set(patch as any).where(eq(s.customers.id, id)).run();
+    },
+    getCustomerByVerificationToken: async (token) =>
+      await db.select().from(s.customers).where(eq(s.customers.emailVerificationToken, token)).get(),
+    getCustomerByResetToken: async (token) =>
+      await db.select().from(s.customers).where(eq(s.customers.emailResetToken, token)).get(),
     listStaff: async () =>
       await db.select().from(s.customers).where(or(eq(s.customers.role, "support_agent"), eq(s.customers.role, "admin"))).all(),
     searchCustomers: async (query, limit = 10) => {
@@ -291,11 +318,20 @@ export function createSqliteRepo(db: AppDatabase): Repo {
     },
 
     createSession: async (t) => {
-      await db.insert(s.sessions).values({ token: t.token, customerId: t.customerId, createdAt: t.createdAt, expiresAt: t.expiresAt }).run();
+      await db.insert(s.sessions).values({
+        token: t.token, customerId: t.customerId, createdAt: t.createdAt, expiresAt: t.expiresAt,
+        lastActivityAt: t.lastActivityAt ?? t.createdAt,
+      }).run();
     },
     getSession: async (token) => await db.select().from(s.sessions).where(eq(s.sessions.token, token)).get(),
     revokeSession: async (token) => {
       await db.delete(s.sessions).where(eq(s.sessions.token, token)).run();
+    },
+    touchSession: async (token, at) => {
+      await db.update(s.sessions).set({ lastActivityAt: at }).where(eq(s.sessions.token, token)).run();
+    },
+    revokeAllSessionsForCustomer: async (customerId) => {
+      await db.delete(s.sessions).where(eq(s.sessions.customerId, customerId)).run();
     },
 
     getOrCreateConversation: async (customerId) => {
@@ -423,8 +459,23 @@ export function createPostgresRepo(db: PgDatabase): Repo {
     getCustomerByEmail: async (email) =>
       await pgOne(db.select().from(pg.customers).where(eq(pg.customers.email, email.toLowerCase()))),
     createCustomer: async (c) => {
-      await db.insert(pg.customers).values({ id: c.id, name: c.name, email: c.email, passwordHash: c.passwordHash, role: c.role, createdAt: c.createdAt });
+      await db.insert(pg.customers).values({
+        id: c.id, name: c.name, email: c.email, passwordHash: c.passwordHash, role: c.role, createdAt: c.createdAt,
+        emailVerified: c.emailVerified ?? 1,
+        emailVerificationToken: c.emailVerificationToken ?? null,
+        emailVerificationSentAt: c.emailVerificationSentAt ?? null,
+        emailResetToken: c.emailResetToken ?? null,
+        emailResetSentAt: c.emailResetSentAt ?? null,
+        deactivatedAt: c.deactivatedAt ?? null,
+      });
     },
+    updateCustomer: async (id, patch) => {
+      await db.update(pg.customers).set(patch as any).where(eq(pg.customers.id, id));
+    },
+    getCustomerByVerificationToken: async (token) =>
+      await pgOne(db.select().from(pg.customers).where(eq(pg.customers.emailVerificationToken, token))),
+    getCustomerByResetToken: async (token) =>
+      await pgOne(db.select().from(pg.customers).where(eq(pg.customers.emailResetToken, token))),
     listStaff: async () =>
       await pgAll(db.select().from(pg.customers).where(or(eq(pg.customers.role, "support_agent"), eq(pg.customers.role, "admin")))),
     searchCustomers: async (query, limit = 10) => {
@@ -565,11 +616,20 @@ export function createPostgresRepo(db: PgDatabase): Repo {
     },
 
     createSession: async (t) => {
-      await db.insert(pg.sessions).values({ token: t.token, customerId: t.customerId, createdAt: t.createdAt, expiresAt: t.expiresAt });
+      await db.insert(pg.sessions).values({
+        token: t.token, customerId: t.customerId, createdAt: t.createdAt, expiresAt: t.expiresAt,
+        lastActivityAt: t.lastActivityAt ?? t.createdAt,
+      });
     },
     getSession: async (token) => await pgOne(db.select().from(pg.sessions).where(eq(pg.sessions.token, token))),
     revokeSession: async (token) => {
       await db.delete(pg.sessions).where(eq(pg.sessions.token, token));
+    },
+    touchSession: async (token, at) => {
+      await db.update(pg.sessions).set({ lastActivityAt: at }).where(eq(pg.sessions.token, token));
+    },
+    revokeAllSessionsForCustomer: async (customerId) => {
+      await db.delete(pg.sessions).where(eq(pg.sessions.customerId, customerId));
     },
 
     getOrCreateConversation: async (customerId) => {

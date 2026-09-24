@@ -3,7 +3,13 @@
  * One template per event; minimal, readable HTML (no external assets).
  */
 
-export type NotifyEvent = "ticket_created" | "ticket_updated" | "approval_requested" | "approval_result";
+export type NotifyEvent =
+  | "ticket_created"
+  | "ticket_updated"
+  | "approval_requested"
+  | "approval_result"
+  | "account_verification"
+  | "password_reset";
 
 export interface NotifyEmail {
   subject: string;
@@ -92,6 +98,30 @@ export function buildNotificationEmail(
              ${approved ? "" : `<li><strong>Reason:</strong> ${esc(payload.reason ?? "not specified")}</li>`}
            </ul>
            ${approved ? "<p>The refund is being processed. It usually appears on your original payment method within a few business days.</p>" : ""}`),
+      };
+    }
+    case "account_verification": {
+      const link = `${String(payload.appUrl ?? "")}/auth/verify-email?token=${encodeURIComponent(String(payload.token ?? ""))}`;
+      return {
+        subject: "Verify your email address",
+        html: page("Verify your email",
+          `<p>Hi ${esc(customerName)},</p>
+           <p>Welcome to Aurora Support! Please verify your email address to activate your account.</p>
+           <p style='margin:16px 0'><a href='${esc(link)}' style='display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;padding:10px 18px;border-radius:6px;font-weight:600;'>Verify my email</a></p>
+           <p style='font-size:12px;color:#718096;word-break:break-all;'>Or open this link:<br/>${esc(link)}</p>
+           <p style='font-size:12px;color:#718096;'>This link expires in 24 hours.</p>`),
+      };
+    }
+    case "password_reset": {
+      const link = `${String(payload.appUrl ?? "")}/auth/reset-password?token=${encodeURIComponent(String(payload.token ?? ""))}`;
+      return {
+        subject: "Reset your Aurora Support password",
+        html: page("Reset your password",
+          `<p>Hi ${esc(customerName)},</p>
+           <p>We received a request to reset the password for your account. If you did not request this, you can ignore this email.</p>
+           <p style='margin:16px 0'><a href='${esc(link)}' style='display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;padding:10px 18px;border-radius:6px;font-weight:600;'>Choose a new password</a></p>
+           <p style='font-size:12px;color:#718096;word-break:break-all;'>Or open this link:<br/>${esc(link)}</p>
+           <p style='font-size:12px;color:#718096;'>This link expires in 1 hour and can be used once.</p>`),
       };
     }
   }

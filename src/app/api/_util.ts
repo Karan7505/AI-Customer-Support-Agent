@@ -62,9 +62,9 @@ export function httpError(e: unknown): NextResponse {
   if (e instanceof AppError) {
     const status =
       e.code === "UNAUTHORIZED" ? 401 :
-      e.code === "FORBIDDEN" ? 403 :
+      e.code === "FORBIDDEN" || e.code === "ACCOUNT_DEACTIVATED" || e.code === "EMAIL_NOT_VERIFIED" ? 403 :
       e.code === "NOT_FOUND" || e.code === "APPROVAL_NOT_FOUND" ? 404 :
-      e.code === "VALIDATION_ERROR" ? 400 :
+      e.code === "VALIDATION_ERROR" || e.code === "TOKEN_INVALID" ? 400 :
       e.code === "DUPLICATE" ? 409 :
       500;
     return NextResponse.json(

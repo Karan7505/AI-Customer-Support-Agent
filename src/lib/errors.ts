@@ -15,6 +15,9 @@ export type ErrorCode =
   | "APPROVAL_NOT_APPROVED"
   | "APPROVAL_EXPIRED"
   | "APPROVAL_MISMATCH"
+  | "ACCOUNT_DEACTIVATED"
+  | "EMAIL_NOT_VERIFIED"
+  | "TOKEN_INVALID"
   | "INTERNAL"
   | "TOOL_ERROR";
 
@@ -52,6 +55,12 @@ export const Errors = {
     new AppError("APPROVAL_EXPIRED", "The approval request has expired.", { id }),
   approvalMismatch: (msg: string) =>
     new AppError("APPROVAL_MISMATCH", msg),
+  accountDeactivated: (msg = "This account has been deactivated.") =>
+    new AppError("ACCOUNT_DEACTIVATED", msg),
+  emailNotVerified: (msg = "Please verify your email address before signing in.") =>
+    new AppError("EMAIL_NOT_VERIFIED", msg),
+  tokenInvalid: (msg = "This link is invalid or has expired.") =>
+    new AppError("TOKEN_INVALID", msg),
   internal: (msg = "Internal error.") => new AppError("INTERNAL", msg),
   tool: (msg: string, details?: unknown) => new AppError("TOOL_ERROR", msg, details),
 };

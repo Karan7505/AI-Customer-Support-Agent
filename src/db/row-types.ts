@@ -13,6 +13,14 @@ export interface CustomerRow {
   passwordHash: string;
   role: string;
   createdAt: number;
+  /** 1 = email verified (existing/seed rows backfill to 1). */
+  emailVerified: number;
+  emailVerificationToken: string | null;
+  emailVerificationSentAt: number | null;
+  emailResetToken: string | null;
+  emailResetSentAt: number | null;
+  /** Soft-delete marker (epoch ms); set => deactivated. */
+  deactivatedAt: number | null;
 }
 
 export interface OrderRow {
@@ -111,6 +119,7 @@ export interface SessionRow {
   customerId: string;
   createdAt: number;
   expiresAt: number;
+  lastActivityAt: number | null;
 }
 
 export interface ConversationRow {

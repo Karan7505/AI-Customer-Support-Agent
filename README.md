@@ -403,6 +403,25 @@ completed, failed` — clearly distinguished in the UI.
 
 ---
 
+## Account lifecycle (§7.1 / §7.4)
+
+| Endpoint | Access | Behavior |
+|---|---|---|
+| `POST /api/auth/register` | public | Create a customer account. With `EMAIL_VERIFICATION_REQUIRED` the account starts unverified and a 24h single-use verification email is queued; login is blocked until verified. |
+| `POST /api/auth/verify-email` | public | Consumes the verification token (`{token}`) and unlocks login. |
+| `POST /api/auth/change-password` | authenticated | Verifies the current password, then ROTATES sessions: all sessions for the account are revoked and the caller gets a fresh one. |
+| `POST /api/auth/forgot-password` | public | Anti-enumeration: identical response for known/unknown emails. Real accounts get a 1h single-use reset email. |
+| `POST /api/auth/reset-password` | public | Consumes the reset token, sets the new password, revokes ALL sessions. |
+| `POST /api/admin/deactivate-user` | admin | Soft-deactivates a customer (`deactivated_at` marker — row is retained, never hard-deleted) and revokes all its sessions. |
+
+Security properties: sessions are HMAC-signed against `SESSION_SECRET`
+(forged/copied tokens are rejected and revoked on sight), login rejects
+deactivated and unverified accounts with distinct errors, password reset is
+anti-enumeration, and every lifecycle event is audit-logged
+(`auth.registered`, `auth.email_verified`, `auth.password_changed`,
+`auth.password_reset_requested`, `auth.password_reset`,
+`auth.account_deactivated`).
+
 ## External integrations (all key-gated; offline stays zero-config)
 
 Every integration below is a **mock/offline default**. Setting the provider key
@@ -593,6 +612,12 @@ the app runs with **no** variables set.
 | `QUEUE_PROVIDER` | no | `memory` | Job queue provider (`redis` = extension point). |
 | `JOB_MAX_RETRIES` | no | `3` | Max attempts per background job. |
 | `JOB_RETRY_BACKOFF_MS` | no | `1000` | Exponential backoff base (1s → 2s → 4s). |
+| `REGISTRATION_ENABLED` | no | `true` | Public self-service registration. |
+| `EMAIL_VERIFICATION_REQUIRED` | no | `true` | New accounts must verify email before login. |
+| `PASSWORD_MIN_LENGTH` | no | `8` | Minimum password length (register/change/reset). |
+| `SESSION_EXPIRES_MS` | no | `604800000` | Absolute session lifetime (7 days). |
+| `EMAIL_VERIFICATION_TTL_MS` | no | `86400000` | Verification link lifetime (24h, single-use). |
+| `PASSWORD_RESET_TTL_MS` | no | `3600000` | Reset link lifetime (1h, single-use). |
 
 The mode banner (see [Runtime modes](#runtime-modes--how-it-auto-switches)) shows
 which values took effect, without ever printing the key or URL themselves.

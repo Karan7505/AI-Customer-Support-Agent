@@ -348,3 +348,50 @@ export function jobRetryBackoffMs(): number {
   const n = parseInt(process.env.JOB_RETRY_BACKOFF_MS ?? "1000", 10);
   return Number.isFinite(n) && n > 0 ? n : 1000;
 }
+
+/* -------------------------------------------------------------------------- */
+/*  Identity lifecycle (blueprint §7.1 / §7.4)                                 */
+/* -------------------------------------------------------------------------- */
+
+function envBool(name: string, def: boolean): boolean {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return def;
+  const v = raw.trim().toLowerCase();
+  if (v === "true" || v === "1" || v === "yes") return true;
+  if (v === "false" || v === "0" || v === "no") return false;
+  return def;
+}
+
+export function registrationEnabled(): boolean {
+  return envBool("REGISTRATION_ENABLED", true);
+}
+
+export function emailVerificationRequired(): boolean {
+  return envBool("EMAIL_VERIFICATION_REQUIRED", true);
+}
+
+export function passwordMinLength(): number {
+  const n = parseInt(process.env.PASSWORD_MIN_LENGTH ?? "8", 10);
+  return Number.isFinite(n) && n >= 6 ? n : 8;
+}
+
+/** Absolute session lifetime (default 7 days). */
+export function sessionExpiresMs(): number {
+  const def = 7 * 24 * 60 * 60 * 1000;
+  const n = parseInt(process.env.SESSION_EXPIRES_MS ?? String(def), 10);
+  return Number.isFinite(n) && n > 0 ? n : def;
+}
+
+/** Email-verification link TTL (default 24h). */
+export function emailVerificationTtlMs(): number {
+  const def = 24 * 60 * 60 * 1000;
+  const n = parseInt(process.env.EMAIL_VERIFICATION_TTL_MS ?? String(def), 10);
+  return Number.isFinite(n) && n > 0 ? n : def;
+}
+
+/** Password-reset link TTL (default 1h). */
+export function passwordResetTtlMs(): number {
+  const def = 60 * 60 * 1000;
+  const n = parseInt(process.env.PASSWORD_RESET_TTL_MS ?? String(def), 10);
+  return Number.isFinite(n) && n > 0 ? n : def;
+}

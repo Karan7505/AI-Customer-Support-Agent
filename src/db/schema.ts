@@ -79,6 +79,14 @@ export const customers = sqliteTable("customers", {
   passwordHash: text("password_hash").notNull(),
   role: text("role").notNull().default(ROLE_CUSTOMER),
   createdAt: integer("created_at").notNull(),
+  /** 1 = verified. Existing/seed rows backfill to 1; new registrations start at 0. */
+  emailVerified: integer("email_verified").notNull().default(1),
+  emailVerificationToken: text("email_verification_token"),
+  emailVerificationSentAt: integer("email_verification_sent_at"),
+  emailResetToken: text("email_reset_token"),
+  emailResetSentAt: integer("email_reset_sent_at"),
+  /** Soft-delete marker (epoch ms). Set => account deactivated, login blocked. */
+  deactivatedAt: integer("deactivated_at"),
 });
 
 export const orders = sqliteTable(
@@ -198,6 +206,8 @@ export const sessions = sqliteTable("sessions", {
     .references(() => customers.id),
   createdAt: integer("created_at").notNull(),
   expiresAt: integer("expires_at").notNull(),
+  /** Last activity (epoch ms); maintained at a bounded cadence on session checks. */
+  lastActivityAt: integer("last_activity_at"),
 });
 
 export const conversations = sqliteTable(

@@ -33,6 +33,12 @@ export const customers = pgTable("customers", {
   passwordHash: text("passwordHash").notNull(),
   role: text("role").notNull().default(ROLE_CUSTOMER),
   createdAt: integer("createdAt").notNull(),
+  emailVerified: integer("emailVerified").notNull().default(1),
+  emailVerificationToken: text("emailVerificationToken"),
+  emailVerificationSentAt: integer("emailVerificationSentAt"),
+  emailResetToken: text("emailResetToken"),
+  emailResetSentAt: integer("emailResetSentAt"),
+  deactivatedAt: integer("deactivatedAt"),
 });
 
 export const orders = pgTable(
@@ -134,6 +140,7 @@ export const sessions = pgTable("sessions", {
   customerId: text("customerId").notNull().references(() => customers.id),
   createdAt: integer("createdAt").notNull(),
   expiresAt: integer("expiresAt").notNull(),
+  lastActivityAt: integer("lastActivityAt"),
 });
 
 export const conversations = pgTable(

@@ -34,6 +34,9 @@ interface EmailJobPayload {
 }
 
 function dedupeKeyFor(event: NotifyEvent, payload: Record<string, unknown>): string {
+  if (event === "account_verification" || event === "password_reset") {
+    return `email:${event}:${String(payload.token ?? "")}`;
+  }
   const id = String(
     (event.startsWith("ticket") ? payload.ticketId : payload.approvalId) ?? "",
   );
@@ -58,6 +61,10 @@ const handleEmailJob: JobHandler = async (job, ctx) => {
 
   if (event === "approval_requested") {
     recipients.push(...adminEmailList());
+  } else if (event === "account_verification" || event === "password_reset") {
+    // Self-addressed: the (possibly not-yet-verified) account's own email.
+    if (typeof payload.email === "string") recipients.push(payload.email);
+    customerName = typeof payload.name === "string" ? payload.name : undefined;
   } else {
     if (customerId) {
       const c = await ctx.repo.getCustomer(customerId);

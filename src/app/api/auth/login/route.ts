@@ -31,9 +31,10 @@ export async function POST(req: Request) {
       let principal;
       let token;
       let expiresAt;
+      let emailVerified = 1;
       try {
         const { repo } = deps();
-        ({ principal, token, expiresAt } = await login(repo, body.email, body.password));
+        ({ principal, token, expiresAt, emailVerified } = await login(repo, body.email, body.password));
       } catch (e) {
         // Monitorable signal for alerting; email only — never the password.
         console.warn("[aurora] login_failed", { email: account, ip });
@@ -41,7 +42,13 @@ export async function POST(req: Request) {
       }
       const res = json({
         ok: true,
-        user: { id: principal.id, name: principal.name, email: principal.email, role: principal.role },
+        user: {
+          id: principal.id,
+          name: principal.name,
+          email: principal.email,
+          role: principal.role,
+          emailVerified: emailVerified === 1,
+        },
       });
       setSessionCookie(res, token, expiresAt);
       return res;
