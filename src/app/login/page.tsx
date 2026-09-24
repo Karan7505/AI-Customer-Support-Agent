@@ -12,6 +12,10 @@ const DEMO_ACCOUNTS = [
   { label: "Admin", email: "admin@example.com", note: "Morgan — approves refunds & audit" },
 ];
 
+// Demo credentials are a development convenience. A production build must not
+// display them (the server also stops accepting the demo password — see auth.ts).
+const SHOW_DEMO = process.env.NODE_ENV !== "production";
+
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("jane@example.com");
@@ -66,9 +70,11 @@ export default function LoginPage() {
         {/* Form */}
         <div className="card p-6 md:p-8">
           <h2 className="text-xl font-semibold text-white">Sign in</h2>
-          <p className="text-sm text-slate-400 mt-1">
-            Demo password for every account: <code className="font-mono text-accent">demo1234</code>
-          </p>
+          {SHOW_DEMO && (
+            <p className="text-sm text-slate-400 mt-1">
+              Demo password for every account: <code className="font-mono text-accent">demo1234</code>
+            </p>
+          )}
           <form onSubmit={doLogin} className="mt-6 space-y-4">
             <div>
               <label className="text-sm text-slate-300">Email</label>
@@ -102,21 +108,23 @@ export default function LoginPage() {
             </button>
           </form>
 
-          <div className="mt-6">
-            <p className="text-xs uppercase tracking-wide text-slate-500 mb-2">Quick demo logins</p>
-            <div className="grid grid-cols-2 gap-2">
-              {DEMO_ACCOUNTS.map((acc) => (
-                <button
-                  key={acc.email}
-                  onClick={() => quick(acc)}
-                  className="text-left rounded-lg border border-surface-line bg-white/5 hover:bg-white/10 px-3 py-2 transition-colors"
-                >
-                  <div className="text-sm font-medium text-slate-100">{acc.label}</div>
-                  <div className="text-xs text-slate-400 truncate">{acc.email}</div>
-                </button>
-              ))}
+          {SHOW_DEMO && (
+            <div className="mt-6">
+              <p className="text-xs uppercase tracking-wide text-slate-500 mb-2">Quick demo logins</p>
+              <div className="grid grid-cols-2 gap-2">
+                {DEMO_ACCOUNTS.map((acc) => (
+                  <button
+                    key={acc.email}
+                    onClick={() => quick(acc)}
+                    className="text-left rounded-lg border border-surface-line bg-white/5 hover:bg-white/10 px-3 py-2 transition-colors"
+                  >
+                    <div className="text-sm font-medium text-slate-100">{acc.label}</div>
+                    <div className="text-xs text-slate-400 truncate">{acc.email}</div>
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
 
           <div className="mt-6 text-xs text-slate-500">
             <Link href="/" className="hover:text-slate-300">

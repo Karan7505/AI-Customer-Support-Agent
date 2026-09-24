@@ -24,10 +24,21 @@ export function httpError(e: unknown): NextResponse {
       { status },
     );
   }
+  // Never echo raw driver/exception messages to the client: DB errors can
+  // contain SQL fragments, table/constraint names, and file paths. Log the
+  // full error server-side, return a generic body.
+  console.error("[aurora] unhandled request error:", e);
   return NextResponse.json(
-    { error: { code: "INTERNAL", message: e instanceof Error ? e.message : "Internal error" } },
+    { error: { code: "INTERNAL", message: "Internal error." } },
     { status: 500 },
   );
+}
+
+/** Best-effort client IP (first X-Forwarded-For hop behind a proxy, else unknown). */
+export function clientIp(req: Request): string {
+  const xff = req.headers.get("x-forwarded-for");
+  if (xff) return xff.split(",")[0].trim();
+  return req.headers.get("x-real-ip")?.trim() || "unknown";
 }
 
 /** Repo for the current request (shared handle; SQLite or Postgres by env). */

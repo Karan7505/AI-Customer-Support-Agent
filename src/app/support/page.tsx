@@ -137,7 +137,7 @@ export default function SupportPage() {
             <button
               className="btn-ghost text-xs"
               onClick={async () => {
-                await api("/api/auth/logout", { method: "POST" });
+                await api("/api/auth/logout", { method: "POST", body: JSON.stringify({}) });
                 router.push("/login");
               }}
             >

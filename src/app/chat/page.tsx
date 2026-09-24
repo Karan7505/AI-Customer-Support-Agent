@@ -144,7 +144,7 @@ export default function ChatPage() {
 
   return (
     <div className="h-[100dvh] flex flex-col">
-      <Header user={user} onLogout={async () => { await api("/api/auth/logout", { method: "POST" }); router.push("/login"); }} />
+      <Header user={user} onLogout={async () => { await api("/api/auth/logout", { method: "POST", body: JSON.stringify({}) }); router.push("/login"); }} />
 
       {status?.awaitingApproval && (
         <div className="bg-amber-500/10 border-b border-amber-500/20 text-amber-200 text-sm px-4 py-2 flex items-center gap-2">

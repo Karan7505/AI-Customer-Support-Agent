@@ -571,6 +571,12 @@ const update_support_ticket: ToolSpec = {
   },
   internal: false,
   handler: async (ctx, raw) => {
+    // Defense in depth: the agent loop gates this tool by role visibility,
+    // but the handler must stay safe even if a new entry point calls runTool
+    // directly with a customer principal.
+    if (!isStaff(ctx.principal.role)) {
+      throw Errors.forbidden("Only support staff can update tickets.");
+    }
     const args = validate(UpdateSupportTicketInput, raw);
     const existing = await ctx.repo.getTicket(args.ticketId);
     if (!existing) throw Errors.notFound("Ticket");

@@ -1,6 +1,10 @@
 import type { LlmClient, LlmMessage, LlmPlan, LlmTool } from "./llm";
 import { Errors } from "./errors";
 
+/** Hard ceiling per LLM round-trip; the agent loop may call this up to
+ * AGENT_MAX_ITERATIONS times per turn, so total turn latency stays bounded. */
+const LLM_REQUEST_TIMEOUT_MS = 60_000;
+
 /**
  * Real OpenAI-compatible function-calling planner. Uses global fetch (no SDK).
  * The model only PROPOSES a tool or a final message; the agent loop enforces
@@ -43,6 +47,8 @@ export class OpenAiLlmClient implements LlmClient {
     try {
       res = await fetch(`${this.baseUrl}/chat/completions`, {
         method: "POST",
+        // A hung upstream must not hold worker threads/requests open-ended.
+        signal: AbortSignal.timeout(LLM_REQUEST_TIMEOUT_MS),
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${this.apiKey}`,
@@ -50,7 +56,8 @@ export class OpenAiLlmClient implements LlmClient {
         body: JSON.stringify(body),
       });
     } catch (e) {
-      throw Errors.tool(`LLM request failed: ${e instanceof Error ? e.message : String(e)}`);
+      const timedOut = e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError");
+      throw Errors.tool(timedOut ? "LLM request timed out." : "LLM request failed.");
     }
     if (!res.ok) {
       throw Errors.tool(`LLM request failed with HTTP ${res.status}.`);

@@ -86,8 +86,12 @@ export function authorize(
   if (READ_TOOLS.has(toolName) || toolName === "lookup_policy") {
     return { allowed: true };
   }
-  if (toolName === "create_support_ticket" || toolName === "update_support_ticket") {
+  if (toolName === "create_support_ticket") {
     return { allowed: true };
+  }
+  // Updating a ticket (status/priority/internal notes) is staff-only.
+  if (toolName === "update_support_ticket") {
+    return { allowed: isStaff(role) };
   }
   if (toolName === "request_refund") {
     // Customers refund their own orders; staff can initiate on a customer's

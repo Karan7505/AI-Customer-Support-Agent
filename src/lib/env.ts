@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+
 /** Centralised, typed access to environment configuration.
  *
  * The app is API-key-CONFIGURABLE and production-oriented:
@@ -67,8 +70,68 @@ export function approvalTtlMs(): number {
   return envInt("APPROVAL_TTL_HOURS", 72) * 60 * 60 * 1000;
 }
 
+const DEV_SESSION_SECRET = "dev-insecure-secret-change-me";
+
 export function sessionSecret(): string {
-  return envStr("SESSION_SECRET", "dev-insecure-secret-change-me");
+  const secret = (process.env.SESSION_SECRET ?? "").trim();
+  if (!secret) {
+    if (process.env.NODE_ENV === "production") {
+      // Fail loudly instead of signing tokens with a public dev constant.
+      throw new Error(
+        "SESSION_SECRET is required in production (e.g. `openssl rand -hex 32`).",
+      );
+    }
+    return DEV_SESSION_SECRET;
+  }
+  return secret;
+}
+
+/** Read a value straight from a raw .env file (used at boot, before Next loads env). */
+function envFileValue(dir: string, filenames: string[], key: string): string | undefined {
+  for (const name of filenames) {
+    try {
+      const text = fs.readFileSync(path.join(dir, name), "utf8");
+      const m = text.match(new RegExp(`^\\s*${key}\\s*=\\s*(.*)$`, "m"));
+      if (m) {
+        const v = m[1].trim().replace(/^["']|["']$/g, "");
+        if (v) return v;
+      }
+    } catch {
+      /* file absent — keep looking */
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Production readiness check, run from src/instrumentation.ts at boot.
+ * - SESSION_SECRET must be set (never the dev constant) or the process exits.
+ * - A mock LLM in production is a misconfiguration, not a crash: warn loudly.
+ * Reads raw .env files because at build/boot time Next has not loaded them
+ * into process.env yet; process.env wins when present (runtime mode).
+ */
+export function assertProductionReady(): void {
+  if (process.env.NODE_ENV !== "production") return;
+  const secret =
+    process.env.SESSION_SECRET?.trim() ||
+    envFileValue(process.cwd(), [".env.production", ".env"], "SESSION_SECRET");
+  if (!secret || secret === DEV_SESSION_SECRET) {
+    throw new Error(
+      "REFUSING TO START: SESSION_SECRET must be set to a long random string in production (SESSION_SECRET=... or .env.production).",
+    );
+  }
+  const llmProvider =
+    process.env.LLM_PROVIDER?.trim().toLowerCase() ||
+    envFileValue(process.cwd(), [".env.production", ".env"], "LLM_PROVIDER")?.toLowerCase();
+  const hasKey =
+    !!(process.env.OPENAI_API_KEY ?? "").trim() ||
+    !!envFileValue(process.cwd(), [".env.production", ".env"], "OPENAI_API_KEY");
+  if (llmProvider === "mock" || (!hasKey && !llmProvider)) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[aurora] WARNING: production is running with the MOCK LLM planner — chat replies will be canned. Set OPENAI_API_KEY (or LLM_PROVIDER) for real answers.",
+    );
+  }
 }
 
 export function appUrl(): string {

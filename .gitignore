@@ -29,10 +29,14 @@ install.log
 # test env file is committed on purpose (no secrets)
 !.env.test
 
-# local db
+# local db (data dir + SQLite WAL/SHM sidecars — never commit live DB state)
+data/
 *.sqlite
 *.sqlite-journal
 *.db
+*.db-wal
+*.db-shm
+*.db-journal
 !.db/schema.sql
 
 # typescript

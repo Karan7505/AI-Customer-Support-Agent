@@ -8,8 +8,10 @@ import {
 /**
  * Password hashing with PBKDF2 (Node built-ins, no native deps).
  * Stored as `pbkdf2$<iter>$<saltHex>$<hashHex>`.
+ * 600k iterations per OWASP guidance for PBKDF2-SHA256; verifyPassword reads
+ * the iteration count from the stored string, so legacy hashes still verify.
  */
-const PBKDF2_ITER = 120_000;
+const PBKDF2_ITER = 600_000;
 
 export function hashPassword(password: string): string {
   const salt = randomBytes(16);

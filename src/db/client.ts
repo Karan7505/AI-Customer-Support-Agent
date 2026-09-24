@@ -56,8 +56,26 @@ export function getDbFile(): Database.Database {
     _db.pragma("journal_mode = WAL");
     _db.pragma("foreign_keys = ON");
     applySchema(_db);
+    hardenFilePermissions(p);
   }
   return _db;
+}
+
+/**
+ * Restrict the database file (and WAL sidecars) to the owning user on unix
+ * hosts: it contains password hashes, session tokens and chat PII, and
+ * better-sqlite3 otherwise creates it with the process umask (often 0644).
+ * No-op on Windows and for in-memory databases.
+ */
+function hardenFilePermissions(p: string): void {
+  if (process.platform === "win32" || p === ":memory:") return;
+  for (const f of [p, `${p}-wal`, `${p}-shm`]) {
+    try {
+      fs.chmodSync(f, 0o600);
+    } catch {
+      /* WAL/SHM sidecars may not exist yet */
+    }
+  }
 }
 
 export function getDb(): AppDatabase {

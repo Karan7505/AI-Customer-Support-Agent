@@ -71,7 +71,7 @@ export default function AdminPage() {
           <div className="flex items-center gap-2">
             <Link2 to="/support">Support</Link2>
             <Link2 to="/chat">Chat</Link2>
-            <button className="btn-ghost text-xs" onClick={async () => { await api("/api/auth/logout", { method: "POST" }); router.push("/login"); }}>
+            <button className="btn-ghost text-xs" onClick={async () => { await api("/api/auth/logout", { method: "POST", body: JSON.stringify({}) }); router.push("/login"); }}>
               Sign out
             </button>
           </div>

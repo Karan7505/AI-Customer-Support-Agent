@@ -36,6 +36,20 @@ async function sendMessage(page: Page, text: string) {
 
 test.describe.configure({ mode: "serial" });
 
+test.beforeAll(async ({ browser }) => {
+  // Warm up `next dev` on-demand compilation before the first spec races
+  // against cold-compile latency (unauthenticated visits still compile the
+  // server-side routes).
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
+  for (const path of ["/login", "/chat", "/admin", "/support"]) {
+    await page
+      .goto(path, { waitUntil: "domcontentloaded", timeout: 120000 })
+      .catch(() => {});
+  }
+  await ctx.close();
+});
+
 test("full support flow: order lookup -> refund request -> admin approval -> confirmed refund", async ({ browser }) => {
   const custCtx: BrowserContext = await browser.newContext();
   const adminCtx: BrowserContext = await browser.newContext();
@@ -44,7 +58,8 @@ test("full support flow: order lookup -> refund request -> admin approval -> con
 
   // 1. Customer logs in.
   await login(cust, CUSTOMER);
-  await expect(cust.getByTestId("chat-input")).toBeVisible();
+  // 30s: first hit of /chat may still compile on the dev server.
+  await expect(cust.getByTestId("chat-input")).toBeVisible({ timeout: 30000 });
 
   // 2. Ask about a shipped order -> order retrieved with tracking.
   await sendMessage(cust, "Where is order ORD-1001?");

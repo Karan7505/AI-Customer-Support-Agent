@@ -448,12 +448,54 @@ the app runs with **no** variables set.
 | `DATABASE_URL` | **no** (enables real DB) | — | Supabase/Postgres connection string. Auto-switches DB to Postgres when set. |
 | `DATABASE_PATH` | no | `./data/app.db` | SQLite file (used only when `DATABASE_URL` is empty). |
 | `AGENT_MAX_ITERATIONS` | no | `6` | Infinite-loop guard. |
-| `SESSION_SECRET` | no | dev value | HMAC for session tokens. **Set a long random string in production.** |
+| `SESSION_SECRET` | **yes (production)** | dev value | HMAC for session tokens. Production boot **fails** if unset. |
 | `APP_URL` | no | `http://localhost:3000` | Public base URL. |
 | `APPROVAL_TTL_HOURS` | no | `72` | How long a pending approval stays actionable. |
+| `CHAT_TURNS_PER_WINDOW` | no | `60` | Per-customer chat turn cap (rate limit). |
+| `CHAT_WINDOW_MS` | no | `600000` | Chat rate-limit window in ms. |
 
 The mode banner (see [Runtime modes](#runtime-modes--how-it-auto-switches)) shows
 which values took effect, without ever printing the key or URL themselves.
+
+---
+
+## Production security
+
+The app is configured to **fail closed** in production:
+
+- **Boot gate** ([src/instrumentation.ts](src/instrumentation.ts)) — when
+  `NODE_ENV=production`: missing `SESSION_SECRET` refuses to start the process;
+  a mock LLM starts with a loud warning (it is not for real traffic).
+- **Demo credentials are dev-only** — the seeded `demo1234` password is rejected
+  by `login()` outside development, and the login UI hides the demo hints in
+  production. Production accounts must be provisioned with real passwords (or SSO).
+- **Login brute-force throttle** — 8 attempts per 10 minutes per IP and per
+  account → HTTP 429. Failures are logged server-side (email + IP only, never
+  the password).
+- **Chat / LLM cost cap** — per-customer turn limit (default 60 turns per 10
+  minutes; `CHAT_TURNS_PER_WINDOW` / `CHAT_WINDOW_MS`) → HTTP 429.
+- **Security headers** — `X-Content-Type-Options: nosniff`, `X-Frame-Options:
+  DENY`, `Referrer-Policy`, and HSTS (with preload) on every response; a strict
+  `Content-Security-Policy` (no `unsafe-eval`, no remote scripts, no plugins,
+  no framing) in production builds. Development omits the CSP deliberately
+  because the Next.js dev toolchain requires `eval()`.
+- **Sessions** — 128-bit random tokens in an HttpOnly `SameSite=Lax` cookie
+  (`Secure` in production), server-side store with 7-day TTL and logout
+  revocation, plus an HMAC signature bound to `SESSION_SECRET` verified on every
+  request (a token copied from a leaked DB copy is useless without the secret).
+- **Passwords** — PBKDF2-SHA256 at 600,000 iterations (legacy 120k hashes still
+  verify).
+- **Page-level auth** — `/admin` and `/support` redirect at the server (RSC)
+  layer when unauthenticated or under-privileged; every data API behind them
+  re-checks auth + role independently.
+- **Database files** — the SQLite file and its WAL/SHM sidecars are created with
+  owner-only (`0600`) permissions on Unix hosts; `data/` is git-ignored.
+
+A full pre-launch audit (16 findings with evidence and verification) is in
+[SECURITY_AUDIT.md](SECURITY_AUDIT.md). Items that still require manual
+action: purging the previously committed WAL/SHM files from **git history**
+(and rotating sessions/credentials as a result), live Supabase
+network/connection-string checks, and a black-box penetration pass.
 
 ---
 
