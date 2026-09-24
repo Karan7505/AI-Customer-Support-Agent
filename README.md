@@ -157,10 +157,24 @@ error is visible immediately. (They don't run from `src/instrumentation.ts`
 because Next compiles that file for the edge runtime, where the native
 SQLite driver cannot be loaded.)
 
-> **Not verified here against a live Supabase/Postgres instance** (none was
-> available in this environment). The adapter is implemented, type-checked, and
-> mirrors the tested SQLite logic, but you should run `npm run db:migrate`,
-> `npm run db:seed`, and the app against your real instance before relying on it.
+**Boot-time validation** (blueprint §5.2): with `DATABASE_URL` set, the server
+probes the database's TCP reachability before accepting traffic and refuses to
+start with a clear `[boot]` error if it is not accepting connections — a
+misconfigured deployment fails at boot, not on the first request. The probe is
+reachability-only: credentials and the database name are validated on first
+query and by `npm run db:migrate`, which the deploy pipeline runs before
+serving (both fail closed). It is a raw TCP connect — not the `postgres`
+driver — because Next also compiles instrumentation for the edge runtime,
+where the driver's `net`/`tls` requirements cannot be resolved. The app pool
+allows up to 20 concurrent connections (`src/db/client.ts`).
+
+> **Verification status:** the Postgres migration + seed path is
+> runtime-verified in CI (`test-postgres` job: `db:migrate` + `db:seed
+> --force` against a postgres:15 service container), the boot probe has unit
+> tests, and the dev-server boot behaviour (fail-fast / clean start) was
+> verified manually. No live Supabase instance was exercised in this
+> environment, so before relying on it, run `npm run db:migrate`,
+> `npm run db:seed`, and the app against your real instance.
 
 ### Running the backend and frontend
 

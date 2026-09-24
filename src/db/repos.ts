@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, like, or } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, like, or } from "drizzle-orm";
 import * as s from "./schema";
 import * as pg from "./schema.pg";
 import type {
@@ -416,10 +416,12 @@ export function createPostgresRepo(db: PgDatabase): Repo {
     listStaff: async () =>
       await pgAll(db.select().from(pg.customers).where(or(eq(pg.customers.role, "support_agent"), eq(pg.customers.role, "admin")))),
     searchCustomers: async (query, limit = 10) => {
-      const q = `%${query.toLowerCase()}%`;
+      // ilike: Postgres LIKE is case-sensitive (SQLite's is not), so name/email
+      // search must use the case-insensitive form here to match SQLite behavior.
+      const q = `%${query}%`;
       const rows = await pgAll(
         db.select().from(pg.customers)
-          .where(or(like(pg.customers.name, q), like(pg.customers.email, q), like(pg.customers.id, q)))
+          .where(or(ilike(pg.customers.name, q), ilike(pg.customers.email, q), ilike(pg.customers.id, q)))
           .orderBy(asc(pg.customers.name)).limit(limit),
       );
       return rows.filter((r: CustomerRow) => r.role === "customer");
@@ -543,8 +545,9 @@ export function createPostgresRepo(db: PgDatabase): Repo {
       if (filter?.actorId) conds.push(eq(pg.auditLogs.actorId, filter.actorId));
       if (filter?.toolName) conds.push(like(pg.auditLogs.toolName, `%${filter.toolName}%`));
       const filtered = conds.length ? base.where(or(...conds)) : base;
-      const all = await pgAll(filtered.orderBy(asc(pg.auditLogs.timestamp)).limit(limit * 2));
-      return all.slice(-limit);
+      // Newest first (the SQLite implementation orders desc + limits); the old
+      // asc-then-slice returned the OLDEST rows once the table outgrew 2*limit.
+      return await pgAll(filtered.orderBy(desc(pg.auditLogs.timestamp), desc(pg.auditLogs.id)).limit(limit));
     },
 
     createSession: async (t) => {

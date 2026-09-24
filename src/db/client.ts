@@ -132,7 +132,9 @@ export function getPostgresDb(): PgDatabase {
     if (!url) {
       throw new Error("DATABASE_URL is not set; Postgres/Supabase mode requires it.");
     }
-    _pg = postgres(url, { max: 5, onnotice: () => {} });
+    // Pool grows lazily up to `max` (postgres-js has no min setting); 20 is
+    // the production ceiling (blueprint §5.2).
+    _pg = postgres(url, { max: 20, idle_timeout: 30, connect_timeout: 10, onnotice: () => {} });
     _pgDb = drizzlePg(_pg, { schema: pgSchema });
   }
   return _pgDb;

@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { pbkdf2Sync, randomBytes } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { makeEnv, principal } from "../helpers";
 import { hashPassword, verifyPassword, safeEqual, randomToken } from "@/lib/security";
 import { login, getPrincipal, DEMO_PASSWORD, SESSION_COOKIE } from "@/lib/auth";
@@ -8,7 +11,7 @@ import { authorize } from "@/lib/policy";
 import { runTool } from "@/lib/tools";
 import { allowRequest, resetRateLimits } from "@/lib/rate-limit";
 import { genId } from "@/lib/ids";
-import { sessionSecret } from "@/lib/env";
+import { assertProductionReady, sessionSecret } from "@/lib/env";
 import nextConfig from "../../next.config";
 
 afterEach(() => {
@@ -105,6 +108,42 @@ describe("F6: session secret enforcement + token signature verification", () => 
 
   it("SESSION_COOKIE is a stable constant", () => {
     expect(SESSION_COOKIE).toBeTruthy();
+  });
+});
+
+describe("Boot gate: production start is refused with an unsafe SESSION_SECRET", () => {
+  const savedCwd = process.cwd();
+  afterEach(() => {
+    process.chdir(savedCwd);
+  });
+
+  it("accepts the secret from process.env or a raw .env file, rejects nothing/dev-constant", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    // Work in an empty temp dir so the raw .env file reads are deterministic.
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "aurora-bootgate-"));
+    process.chdir(tmp);
+    try {
+      // No secret anywhere -> refuses to boot.
+      vi.stubEnv("SESSION_SECRET", "");
+      expect(() => assertProductionReady()).toThrow(/SESSION_SECRET/);
+
+      // The public dev constant is never an acceptable production secret.
+      vi.stubEnv("SESSION_SECRET", "dev-insecure-secret-change-me");
+      expect(() => assertProductionReady()).toThrow(/SESSION_SECRET/);
+
+      // A secret in a raw .env file (node:fs read path) is accepted.
+      vi.stubEnv("SESSION_SECRET", "");
+      fs.writeFileSync(path.join(tmp, ".env"), "SESSION_SECRET=bootgate-secret-0123456789abcdef\n");
+      expect(() => assertProductionReady()).not.toThrow();
+
+      // process.env wins over the file when both are present.
+      vi.stubEnv("SESSION_SECRET", "env-secret-0123456789abcdef0123456789abcd");
+      expect(() => assertProductionReady()).not.toThrow();
+    } finally {
+      // Windows locks the process cwd: chdir back before the dir can be removed.
+      process.chdir(savedCwd);
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
 

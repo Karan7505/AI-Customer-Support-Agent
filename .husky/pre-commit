@@ -42,6 +42,12 @@ while IFS= read -r -d '' f; do
   fi
   # Postgres URLs: CI service containers (localhost) are structural and
   # disposable; a URL pointing at a real host is treated as a leaked credential.
+  # docker-compose*.yml is exempt: its hostnames are compose service names
+  # (e.g. `postgres`) that only resolve inside the local test network, so a
+  # remote-DB credential could not function there.
+  case "$f" in
+    docker-compose*.yml|docker-compose*.yaml) continue ;;
+  esac
   pg_urls="$(printf '%s\n' "$content" | grep -Eio 'postgres(ql)?://[^ :]+:[^@ ]+@[A-Za-z0-9.:-]+' || true)"
   if [ -n "$pg_urls" ]; then
     total_count="$(printf '%s\n' "$pg_urls" | grep -c . || true)"

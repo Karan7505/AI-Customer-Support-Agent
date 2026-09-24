@@ -1,6 +1,3 @@
-import fs from "node:fs";
-import path from "node:path";
-
 /** Centralised, typed access to environment configuration.
  *
  * The app is API-key-CONFIGURABLE and production-oriented:
@@ -86,11 +83,31 @@ export function sessionSecret(): string {
   return secret;
 }
 
+/**
+ * Resolve node builtins at runtime, without any static `node:*` import
+ * reference: webpack resolves both `import x from "node:x"` and
+ * `await import("node:x")` at build time, and both break the edge-runtime
+ * compilation of src/instrumentation.ts, which imports this module. On
+ * non-Node runtimes (edge) the raw .env fallback is simply skipped
+ * (process.env is used instead).
+ */
+function loadNodeModules(): { fs: typeof import("node:fs"); path: typeof import("node:path") } | undefined {
+  const getter = (
+    process as NodeJS.Process & { getBuiltinModule?: (id: string) => unknown }
+  ).getBuiltinModule;
+  if (!getter) return undefined;
+  const fs = getter("node:fs") as typeof import("node:fs") | undefined;
+  const path = getter("node:path") as typeof import("node:path") | undefined;
+  return fs && path ? { fs, path } : undefined;
+}
+
 /** Read a value straight from a raw .env file (used at boot, before Next loads env). */
 function envFileValue(dir: string, filenames: string[], key: string): string | undefined {
+  const mods = loadNodeModules();
+  if (!mods) return undefined;
   for (const name of filenames) {
     try {
-      const text = fs.readFileSync(path.join(dir, name), "utf8");
+      const text = mods.fs.readFileSync(mods.path.join(dir, name), "utf8");
       const m = text.match(new RegExp(`^\\s*${key}\\s*=\\s*(.*)$`, "m"));
       if (m) {
         const v = m[1].trim().replace(/^["']|["']$/g, "");
