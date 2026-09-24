@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Pre-commit guard (blueprint §3.1): block sensitive files and credential
+# patterns from ever entering the repository again.
+set -u
+
+block() {
+  echo ""
+  echo "COMMIT BLOCKED by pre-commit guard: $1"
+  echo "Unstage it (git restore --staged <path>) and retry."
+  echo ""
+  exit 1
+}
+
+while IFS= read -r -d '' f; do
+  [ -n "$f" ] || continue
+
+  case "$f" in
+    data/*|*.db|*.db-wal|*.db-shm|*.db-journal|*.sqlite|*.sqlite-journal)
+      block "sensitive database file: $f" ;;
+    .env|.env.*)
+      case "$f" in
+        .env.example|.env.test) ;; # templates with placeholders only — allowed
+        *)
+          if grep -Eq '^[A-Za-z_][A-Za-z0-9_]*=.' "$f" 2>/dev/null; then
+            block ".env file with assigned values: $f"
+          fi ;;
+      esac ;;
+    *.pem|*.p12|*.key|*.crt|*.secret)
+      block "credential material: $f" ;;
+  esac
+
+  case "$f" in
+    package-lock.json|*.md|*.jpg|*.png|*.webp|*.svg|*.woff|*.woff2) continue ;;
+  esac
+  if git show ":$f" 2>/dev/null | grep -Eiq 'sk-[A-Za-z0-9]{24,}|sk_live_[A-Za-z0-9]{10,}|rk_live_[A-Za-z0-9]{10,}|EPO-[A-Za-z0-9]{12,}|postgres(ql)?://[^:/@ ]+:[^@ ]+@'; then
+    block "credential pattern detected in: $f"
+  fi
+done < <(git diff --cached --name-only -z)
+exit 0

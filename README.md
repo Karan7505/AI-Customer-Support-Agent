@@ -497,6 +497,21 @@ action: purging the previously committed WAL/SHM files from **git history**
 (and rotating sessions/credentials as a result), live Supabase
 network/connection-string checks, and a black-box penetration pass.
 
+### Commit guard & credential rotation
+
+A husky **pre-commit guard** (`.husky/pre-commit`) refuses to commit: anything
+under `data/`, SQLite files (`*.db`, `*.db-wal/shm/journal`, `*.sqlite*`),
+certificate/key material (`*.pem/p12/key/crt/secret`), any `.env*` file with
+assigned values (the `.env.example` / `.env.test` templates are allowed), and
+any file containing credential patterns (OpenAI `sk-…`, Stripe
+`sk_live_/rk_live_`, EasyPost `EPO-…`, `postgres://user:pass@…`). It runs on
+every `git commit` after `npm install` (wired via the `prepare` script).
+
+If a secret or database file is ever committed again: (1) **rotate** the
+credential and the `SESSION_SECRET` (invalidates all sessions) and re-seed
+passwords; (2) **purge** it from history (`git filter-repo` or a fresh repo)
+and force-push; (3) **re-seed** a clean database (`npm run db:reset`).
+
 ---
 
 ## Database
