@@ -1,0 +1,151 @@
+name: CI/CD
+
+# Blueprint §11.4: gate dev/main on typecheck, lint, tests (SQLite + Postgres),
+# E2E, security audit, and build. The deploy stage is a skeleton that stays
+# inert until the owner enables it (vars.DEPLOY_ENABLED) and the Dockerfile +
+# registry credentials from Phase 7 exist.
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "24" # package.json engines >=22; repo verified on Node 24
+
+jobs:
+  lint-typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+
+  test-sqlite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      # Unit + integration + agent-eval suites (in-memory SQLite; no keys needed)
+      - run: npm test
+
+  test-postgres:
+    # Runtime-verifies the Postgres/Supabase path: the versioned PG migration
+    # and the full seed write through createPostgresRepo against a real PG 15.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: aurora
+          POSTGRES_PASSWORD: aurora
+          POSTGRES_DB: aurora
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U aurora"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://aurora:aurora@localhost:5432/aurora
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run db:migrate
+      - run: npm run db:seed -- --force
+      # NOTE: the vitest suite itself stays on in-memory SQLite until the test
+      # helpers are parameterized by driver (blueprint Phase 2 follow-up).
+      - run: npm test
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+
+  security-audit:
+    # Gate on CRITICAL only for now: next 15.x carries a known nested-postcss
+    # HIGH whose fix ships in next 16 (tracked in SECURITY_AUDIT.md).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm audit --omit=dev --audit-level=critical
+
+  build:
+    needs: [lint-typecheck, test-sqlite, test-postgres, e2e, security-audit]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+  # ---------------------------------------------------------------------------
+  # DEPLOY (skeleton — blueprint §11.2/11.4). Inert until ALL of:
+  #   1. the owner sets the repo variable DEPLOY_ENABLED=true,
+  #   2. the Phase-7 Dockerfile exists,
+  #   3. AWS credentials + ECR repository exist (secrets: AWS_ACCESS_KEY_ID,
+  #      AWS_SECRET_ACCESS_KEY, AWS_REGION, ECR_REGISTRY, ECR_REPOSITORY),
+  #   4. the target environment (e.g. ECS service or PaaS) is provisioned.
+  # ---------------------------------------------------------------------------
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    environment: production
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fail clearly until the Phase-7 Dockerfile lands
+        if: hashFiles('Dockerfile') == ''
+        run: echo "DEPLOY_ENABLED is true but no Dockerfile exists yet (Phase 7)." && exit 1
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+      - run: docker build -t ${{ steps.ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:${{ github.sha }} .
+      - name: Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ${{ steps.ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:${{ github.sha }}
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+      - run: docker push ${{ steps.ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:${{ github.sha }}
+      # TODO(owner): update the ECS service / PaaS release to the new image tag
+      # (e.g. aws ecs update-service --cluster <cluster> --service <svc>
+      #  --force-new-deployment) and wire the rollback procedure (docs/runbooks).

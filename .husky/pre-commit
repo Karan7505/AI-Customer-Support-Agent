@@ -32,8 +32,23 @@ while IFS= read -r -d '' f; do
   case "$f" in
     package-lock.json|*.md|*.jpg|*.png|*.webp|*.svg|*.woff|*.woff2) continue ;;
   esac
-  if git show ":$f" 2>/dev/null | grep -Eiq 'sk-[A-Za-z0-9]{24,}|sk_live_[A-Za-z0-9]{10,}|rk_live_[A-Za-z0-9]{10,}|EPO-[A-Za-z0-9]{12,}|postgres(ql)?://[^:/@ ]+:[^@ ]+@'; then
+  content="$(git show ":$f" 2>/dev/null)"
+  case "$content" in
+    *sk-*|*sk_live_*|*rk_live_*|*EPO-*|*"postgres://"*|*"postgresql://"*) ;; # candidate; scan below
+    *) continue ;;
+  esac
+  if printf '%s\n' "$content" | grep -Eiq 'sk-[A-Za-z0-9]{24,}|sk_live_[A-Za-z0-9]{10,}|rk_live_[A-Za-z0-9]{10,}|EPO-[A-Za-z0-9]{12,}'; then
     block "credential pattern detected in: $f"
+  fi
+  # Postgres URLs: CI service containers (localhost) are structural and
+  # disposable; a URL pointing at a real host is treated as a leaked credential.
+  pg_urls="$(printf '%s\n' "$content" | grep -Eio 'postgres(ql)?://[^ :]+:[^@ ]+@[A-Za-z0-9.:-]+' || true)"
+  if [ -n "$pg_urls" ]; then
+    total_count="$(printf '%s\n' "$pg_urls" | grep -c . || true)"
+    local_count="$(printf '%s\n' "$pg_urls" | grep -Eic '@(localhost|127\.0\.0\.1)' || true)"
+    if [ "$total_count" -gt "$local_count" ]; then
+      block "non-localhost postgres connection string detected in: $f"
+    fi
   fi
 done < <(git diff --cached --name-only -z)
 exit 0
