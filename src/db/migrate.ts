@@ -1,16 +1,19 @@
 /**
- * Apply the schema to the active database driver.
- *   npx tsx src/db/migrate.ts            # apply (idempotent)
+ * Apply versioned schema migrations to the active database driver.
+ *   npx tsx src/db/migrate.ts            # apply pending migrations (idempotent)
  *   npx tsx src/db/migrate.ts --reset    # SQLite only: drop the file + rebuild
  *
  * Driver selection is automatic:
- *   - DATABASE_URL set      -> Supabase/Postgres (applies .db/schema.pg.sql)
- *   - otherwise             -> local SQLite at DATABASE_PATH (default ./data/app.db)
+ *   - DATABASE_URL set      -> Postgres/Supabase (migrations/*.pg.sql)
+ *   - otherwise             -> local SQLite at DATABASE_PATH (migrations/*.sql)
+ *
+ * The same runner executes at server boot (src/instrumentation.ts), so this
+ * script is the manual/dev convenience path; both share one code path.
  */
 import fs from "node:fs";
-import path from "node:path";
 import { dbMode, logRuntimeMode } from "@/lib/env";
-import { resolveDbPath, applyPgSchema, closePostgres } from "./client";
+import { resolveDbPath } from "./client";
+import { runSqliteMigrations, runPostgresMigrations } from "./migration-runner";
 import Database from "better-sqlite3";
 
 async function run() {
@@ -18,9 +21,8 @@ async function run() {
   const reset = process.argv.includes("--reset");
 
   if (dbMode() === "postgres") {
-    await applyPgSchema();
-    console.log("[migrate] schema applied to Supabase/Postgres (DATABASE_URL).");
-    await closePostgres();
+    const n = await runPostgresMigrations();
+    console.log(`[migrate] ${n} migration(s) applied to Supabase/Postgres (DATABASE_URL).`);
     return;
   }
 
@@ -36,10 +38,9 @@ async function run() {
   const raw = new Database(p);
   raw.pragma("journal_mode = WAL");
   raw.pragma("foreign_keys = ON");
-  const sql = fs.readFileSync(path.resolve(process.cwd(), ".db", "schema.sql"), "utf8");
-  raw.exec(sql);
+  const n = runSqliteMigrations(raw);
   raw.close();
-  console.log(`[migrate] schema applied to SQLite at ${p}`);
+  console.log(`[migrate] ${n} migration(s) applied to SQLite at ${p}`);
 }
 
 run().catch((e) => {

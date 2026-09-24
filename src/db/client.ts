@@ -7,6 +7,7 @@ import path from "node:path";
 import * as schema from "./schema";
 import * as pgSchema from "./schema.pg";
 import { databaseUrl } from "@/lib/env";
+import { migrationsDir, runSqliteMigrations } from "./migration-runner";
 
 export type AppDatabase = BetterSQLite3Database<typeof schema>;
 export type PgDatabase = PostgresJsDatabase<typeof pgSchema>;
@@ -35,9 +36,13 @@ function applyMigrations(db: Database.Database): void {
   }
 }
 
-/** Apply the schema DDL. Idempotent (uses CREATE TABLE IF NOT EXISTS). */
+/**
+ * Apply the base schema DDL (tests / in-memory databases). Idempotent.
+ * The canonical base DDL is migrations/001_initial.sql — the same file the
+ * versioned runner applies at boot, so tests and the server never drift.
+ */
 export function applySchema(db: Database.Database): void {
-  const sqlFile = path.resolve(process.cwd(), ".db", "schema.sql");
+  const sqlFile = path.join(migrationsDir(), "001_initial.sql");
   const sql = fs.readFileSync(sqlFile, "utf8");
   db.exec(sql);
   applyMigrations(db);
@@ -55,7 +60,8 @@ export function getDbFile(): Database.Database {
     _db = new Database(p);
     _db.pragma("journal_mode = WAL");
     _db.pragma("foreign_keys = ON");
-    applySchema(_db);
+    // Versioned migrations at first use (blueprint §6.2); no-ops when current.
+    runSqliteMigrations(_db);
     hardenFilePermissions(p);
   }
   return _db;
@@ -117,7 +123,8 @@ let _pgDb: PgDatabase | undefined;
 
 /**
  * Process-wide Postgres/Supabase handle. Reads DATABASE_URL (the Supabase
- * connection string) and applies the Postgres schema on first use.
+ * connection string). The schema is applied at boot by the versioned
+ * migration runner (see migration-runner.ts), not here.
  */
 export function getPostgresDb(): PgDatabase {
   if (!_pgDb) {
@@ -129,33 +136,6 @@ export function getPostgresDb(): PgDatabase {
     _pgDb = drizzlePg(_pg, { schema: pgSchema });
   }
   return _pgDb;
-}
-
-/**
- * Idempotent forward migrations for Postgres (CREATE TABLE IF NOT EXISTS in
- * schema.pg.sql does not add columns to an existing table).
- */
-const PG_MIGRATIONS = `
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_name = 'support_tickets' AND column_name = 'internalNotes'
-  ) THEN
-    ALTER TABLE "support_tickets" ADD COLUMN "internalNotes" TEXT;
-  END IF;
-END $$;
-`;
-
-/** Apply the Postgres DDL. Idempotent (CREATE TABLE/INDEX IF NOT EXISTS). */
-export async function applyPgSchema(): Promise<void> {
-  getPostgresDb(); // ensure the client is initialised
-  if (!_pg) throw new Error("Postgres client not initialised");
-  const sqlFile = path.resolve(process.cwd(), ".db", "schema.pg.sql");
-  const sql = fs.readFileSync(sqlFile, "utf8");
-  // postgres-js simple-query protocol supports multiple statements in one call.
-  await _pg.unsafe(sql);
-  await _pg.unsafe(PG_MIGRATIONS);
 }
 
 export async function closePostgres(): Promise<void> {

@@ -134,16 +134,28 @@ APP_URL=https://your-domain
    (use the session/pooler URL). Set it as `DATABASE_URL=...` in `.env.local`.
 2. Apply the schema and seed:
    ```bash
-   npm run db:migrate   # applies .db/schema.pg.sql (idempotent)
+   npm run db:migrate   # applies pending versioned migrations (idempotent)
    npm run db:seed      # or: npm run db:seed -- --force
    ```
 3. Re-run `npm run dev`. The startup log will show `Data: postgres Supabase/Postgres (DATABASE_URL set)`.
 
 The whole data layer is driver-agnostic: `src/db/repos.ts` implements the same
 async `Repo` for both **SQLite** (`createSqliteRepo`) and **Postgres**
-(`createPostgresRepo`); `getRepo()` selects the driver from `DATABASE_URL`. The
-Postgres DDL lives in `.db/schema.pg.sql` and is applied automatically by
-`db:migrate` when `DATABASE_URL` is set.
+(`createPostgresRepo`); `getRepo()` selects the driver from `DATABASE_URL`.
+
+**Versioned migrations** (blueprint §6.2): schema changes live in
+[`migrations/`](migrations/) as `NNN_name.sql` (SQLite) / `NNN_name.pg.sql`
+(Postgres). The runner (`src/db/migration-runner.ts`) applies them in numeric
+order, once each, inside a transaction, and tracks them in a `migrations`
+table (name + sha256 checksum + applied time). Editing an already-applied
+file makes the next run fail (checksum mismatch). Pending migrations are
+applied **at first database use, before any other DB work** (the server's
+DB handle runs the runner on open). This is fail-closed: a failing or
+tampered migration makes every DB-backed request return 500 until it is
+fixed, and `npm run db:migrate` runs the same code path manually so the
+error is visible immediately. (They don't run from `src/instrumentation.ts`
+because Next compiles that file for the edge runtime, where the native
+SQLite driver cannot be loaded.)
 
 > **Not verified here against a live Supabase/Postgres instance** (none was
 > available in this environment). The adapter is implemented, type-checked, and
@@ -425,8 +437,9 @@ src/
      schemas.ts                # Zod input/output schemas
      knowledge.ts              # FAQ/KB with citations
      auth.ts security.ts ids.ts audit.ts errors.ts types.ts util.ts
-  .db/schema.sql                # SQLite DDL (idempotent)
-  .db/schema.pg.sql             # Postgres/Supabase DDL (idempotent)
+  migrations/                   # versioned migrations: 001_initial.sql / .pg.sql
+  .db/schema.sql                # legacy SQLite DDL (superseded by migrations/)
+  .db/schema.pg.sql             # legacy Postgres DDL (superseded by migrations/)
  images/                       # README screenshots
  tests/
    unit/… integration/… eval/… e2e/…
@@ -524,8 +537,10 @@ Driver selected by `DATABASE_URL`:
 
 Tables: `customers, orders, support_tickets, refunds, approval_requests,
 audit_logs, sessions, conversations, messages`. Monetary values are integer cents;
-timestamps are epoch ms. Schemas: SQLite in `.db/schema.sql`, Postgres in
-`.db/schema.pg.sql`.
+timestamps are epoch ms. The base schema is `migrations/001_initial.sql`
+(SQLite) / `migrations/001_initial.pg.sql` (Postgres); later schema changes are
+new numbered files there. (`.db/schema*.sql` are the legacy single-file DDL,
+now superseded by the versioned migrations.)
 
 ```bash
 npm run db:migrate     # apply schema (idempotent; SQLite or Postgres by env)
