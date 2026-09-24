@@ -23,6 +23,7 @@ export const REFUND_STATUS: Record<string, StatusMeta> = {
   rejected: { label: "Rejected", tone: "danger" },
   processing: { label: "Refund processing", tone: "info" },
   completed: { label: "Refund completed", tone: "success" },
+  pending_execution: { label: "Awaiting provider", tone: "warn" },
   failed: { label: "Refund failed", tone: "danger" },
 };
 

@@ -6,6 +6,16 @@ import type { Auditor } from "./audit";
 import { ROLE_ADMIN } from "@/db/schema";
 import { logger } from "./logger";
 import { refundRequestsTotal } from "./metrics";
+import { stripeSecretKey } from "./env";
+import { createStripeRefund, isMockPaymentIntent, registerStripeJobHandlers } from "./stripe";
+import { getJobQueue } from "./queue";
+
+let stripeHandlersRegistered = false;
+function ensureStripeHandlers(): void {
+  if (stripeHandlersRegistered) return;
+  registerStripeJobHandlers(getJobQueue());
+  stripeHandlersRegistered = true;
+}
 
 export interface ExecuteRefundOpts {
   orderId: string;
@@ -27,9 +37,54 @@ export function mapRefund(row: any): Refund {
     status: row.status,
     approvalId: row.approvalId,
     idempotencyKey: row.idempotencyKey,
+    providerRefundId: row.providerRefundId ?? null,
     createdAt: row.createdAt,
     processedAt: row.processedAt,
   };
+}
+
+/**
+ * Settle the payment-provider side of a DB-applied refund (blueprint §5.4).
+ * DB state is the source of truth; the provider is the replica.
+ *  - no key, or a mock payment intent → "skipped" (refund stays completed);
+ *  - provider ok → completed + providerRefundId recorded;
+ *  - provider fails → pending_execution + job queue retries with the same
+ *    idempotency key (never a double refund).
+ */
+async function settleProviderRefund(
+  repo: Repo,
+  refund: Refund,
+  paymentIntentId: string | null,
+  currency: string,
+): Promise<{ refund: Refund; providerStatus: "skipped" | "completed" | "pending" }> {
+  ensureStripeHandlers();
+  const key = stripeSecretKey();
+  if (!key || !paymentIntentId || isMockPaymentIntent(paymentIntentId)) {
+    return { refund, providerStatus: "skipped" };
+  }
+  try {
+    const r = await createStripeRefund({
+      paymentIntentId,
+      amountCents: refund.amount,
+      currency,
+      idempotencyKey: refund.idempotencyKey ?? `refund:${refund.id}`,
+    });
+    await repo.updateRefund(refund.id, { status: "completed", providerRefundId: r.id });
+    logger.info("stripe refund created", { refundId: refund.id, providerRefundId: r.id });
+    // The returned object must reflect the DB state (matters when re-settling a
+    // refund that came in as pending_execution).
+    return { refund: { ...refund, status: "completed", providerRefundId: r.id }, providerStatus: "completed" };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    await repo.updateRefund(refund.id, { status: "pending_execution" });
+    const jobId = await getJobQueue().enqueue(
+      "execute_refund_fallback",
+      { refundId: refund.id },
+      `stripe:${refund.id}`,
+    );
+    logger.warn("stripe refund failed; queued for background retry", { refundId: refund.id, jobId, error: message });
+    return { refund: { ...refund, status: "pending_execution" }, providerStatus: "pending" };
+  }
 }
 
 /**
@@ -42,7 +97,8 @@ export function mapRefund(row: any): Refund {
  *  3. Creates the single refund row at request time; here it is UPDATED to
  *     completed (or created if absent) and the order's refundable balance is
  *     decremented exactly once — all in one transaction.
- *  4. Emits audit entries and returns the persisted refund.
+ *  4. Settles the payment-provider side (Stripe) — DB is source of truth.
+ *  5. Emits audit entries and returns the persisted refund.
  */
 export async function executeRefund(
   repo: Repo,
@@ -62,19 +118,40 @@ export async function executeRefund(
 
   const existing = await repo.getRefundByIdempotencyKey(opts.idempotencyKey);
 
-  // Idempotent no-op: this approved action already produced a completed refund.
-  if (existing && existing.status === "completed") {
-    refundRequestsTotal.inc({ status: "existing" });
-    logger.info("refund already executed (idempotent)", { refundId: existing.id, approvalId: opts.approvalId });
-    await auditor.log(
-      { actor: executor, approvalId: opts.approvalId },
-      "refund.executed_existing",
-      {
-        toolName: "process_refund", arguments: opts, result: { refundId: existing.id, idempotent: true },
-        status: "success", durationMs: nowMs() - t0, metadata: { idempotent: true },
-      },
-    );
-    return mapRefund(existing);
+  if (existing) {
+    // Idempotent no-op: this approved action already produced a refund.
+    // Self-heal: a refund stuck at pending_execution retries the provider now.
+    if (existing.status === "completed" || existing.status === "pending_execution") {
+      if (existing.status === "pending_execution") {
+        const settled = await settleProviderRefund(repo, mapRefund(existing), order.stripePaymentIntentId, order.currency);
+        refundRequestsTotal.inc({ status: "existing" });
+        logger.info("refund re-executed (idempotent), provider re-settled", {
+          refundId: existing.id, approvalId: opts.approvalId, providerStatus: settled.providerStatus,
+        });
+        await auditor.log(
+          { actor: executor, approvalId: opts.approvalId },
+          "refund.executed_existing",
+          {
+            toolName: "process_refund", arguments: opts,
+            result: { refundId: existing.id, idempotent: true, providerStatus: settled.providerStatus },
+            status: "success", durationMs: nowMs() - t0,
+            metadata: { idempotent: true, providerStatus: settled.providerStatus },
+          },
+        );
+        return settled.refund;
+      }
+      refundRequestsTotal.inc({ status: "existing" });
+      logger.info("refund already executed (idempotent)", { refundId: existing.id, approvalId: opts.approvalId });
+      await auditor.log(
+        { actor: executor, approvalId: opts.approvalId },
+        "refund.executed_existing",
+        {
+          toolName: "process_refund", arguments: opts, result: { refundId: existing.id, idempotent: true },
+          status: "success", durationMs: nowMs() - t0, metadata: { idempotent: true },
+        },
+      );
+      return mapRefund(existing);
+    }
   }
 
   // Amount must still fit within the remaining refundable balance.
@@ -89,10 +166,13 @@ export async function executeRefund(
     // decrement the order balance exactly once. (SQLite = sync transaction,
     // Postgres = async transaction; both handled by the adapter.)
     const applied = await repo.applyRefund({ orderId: order.id, amount });
-    const refund = mapRefund(applied);
+    let refund = mapRefund(applied);
+    const settled = await settleProviderRefund(repo, refund, order.stripePaymentIntentId, order.currency);
+    refund = settled.refund;
     refundRequestsTotal.inc({ status: "completed" });
     logger.info("refund completed", {
-      refundId: refund.id, orderId: refund.orderId, amountCents: refund.amount, durationMs: nowMs() - t0,
+      refundId: refund.id, orderId: refund.orderId, amountCents: refund.amount,
+      durationMs: nowMs() - t0, providerStatus: settled.providerStatus,
     });
     await auditor.log(
       { actor: executor, approvalId: opts.approvalId },
@@ -100,8 +180,9 @@ export async function executeRefund(
       {
         toolName: "process_refund",
         arguments: opts,
-        result: { refundId: refund.id, amountCents: refund.amount, orderId: refund.orderId },
-        status: "success", durationMs: nowMs() - t0, metadata: { orderId: refund.orderId, amountCents: refund.amount },
+        result: { refundId: refund.id, amountCents: refund.amount, orderId: refund.orderId, providerStatus: settled.providerStatus, providerRefundId: refund.providerRefundId },
+        status: "success", durationMs: nowMs() - t0,
+        metadata: { orderId: refund.orderId, amountCents: refund.amount, providerStatus: settled.providerStatus },
       },
     );
     return refund;

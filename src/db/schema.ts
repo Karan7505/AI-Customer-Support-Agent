@@ -14,8 +14,13 @@ import {
 export const ROLE_CUSTOMER = "customer" as const;
 export const ROLE_SUPPORT_AGENT = "support_agent" as const;
 export const ROLE_ADMIN = "admin" as const;
+export const ROLE_SYSTEM = "system" as const;
 export type Role =
-  (typeof ROLE_CUSTOMER) | (typeof ROLE_SUPPORT_AGENT) | (typeof ROLE_ADMIN);
+  | (typeof ROLE_CUSTOMER)
+  | (typeof ROLE_SUPPORT_AGENT)
+  | (typeof ROLE_ADMIN)
+  | (typeof ROLE_SYSTEM);
+/** Login roles only — "system" is the principal for background jobs, not a user. */
 export const ROLES: Role[] = [
   ROLE_CUSTOMER,
   ROLE_SUPPORT_AGENT,
@@ -46,6 +51,8 @@ export const REFUND_STATUS = [
   "rejected",
   "processing",
   "completed",
+  /** DB refund applied, but the payment-provider refund is still in flight (job queue retries). */
+  "pending_execution",
   "failed",
 ] as const;
 export type RefundStatus = (typeof REFUND_STATUS)[number];
@@ -87,6 +94,10 @@ export const orders = sqliteTable(
     items: text("items").notNull(), // JSON array
     shippingAddress: text("shipping_address").notNull(), // JSON
     trackingNumber: text("tracking_number"),
+    /** Carrier/3PL shipment id (e.g. EasyPost shipment), when one exists. */
+    externalTrackingId: text("external_tracking_id"),
+    /** Payment provider charge id (e.g. Stripe PaymentIntent), when one exists. */
+    stripePaymentIntentId: text("stripe_payment_intent_id"),
     createdAt: integer("created_at").notNull(),
     deliveredAt: integer("delivered_at"),
     refundableAmount: integer("refundable_amount").notNull(), // remaining refundable cents
@@ -129,6 +140,8 @@ export const refunds = sqliteTable(
     status: text("status").notNull().default("requested"),
     approvalId: text("approval_id"),
     idempotencyKey: text("idempotency_key"),
+    /** Provider-side refund id (e.g. Stripe refund id), set once the provider confirms. */
+    providerRefundId: text("provider_refund_id"),
     createdAt: integer("created_at").notNull(),
     processedAt: integer("processed_at"),
   },

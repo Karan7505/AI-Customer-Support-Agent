@@ -202,15 +202,25 @@ export function logRuntimeMode(): void {
     c.db === "postgres"
       ? "Supabase/Postgres (DATABASE_URL set)"
       : `local SQLite at ${c.sqlitePath}`;
+  const notifyDetail =
+    notificationsEnabled()
+      ? resendApiKey()
+        ? "enabled (Resend key set)"
+        : "enabled (no RESEND_API_KEY; notifications are no-ops)"
+      : "disabled";
   // eslint-disable-next-line no-console
   console.info(
     [
       "[aurora] ───────────────────────────────",
-      `[aurora] runtime mode`,
+      "[aurora] runtime mode",
       `[aurora]   LLM:    ${c.llm.toUpperCase().padEnd(7)} ${llmDetail}`,
       `[aurora]   Data:   ${c.db.padEnd(7)} ${dbDetail}`,
+      `[aurora]   Track:  ${trackingProvider().padEnd(7)} ${easypostApiKey() ? "(EasyPost key set)" : "(mock carrier data)"}`,
+      `[aurora]   Notify: ${notifyDetail}`,
+      `[aurora]   Stripe: ${stripeSecretKey() ? "key set (live refunds)" : "no key (DB-only refunds)"}`,
+      `[aurora]   Queue:  ${queueProvider().padEnd(7)} retries=${jobMaxRetries()} backoff=${jobRetryBackoffMs()}ms`,
       `[aurora]   max tool iterations: ${c.agentMaxIterations}`,
-      `[aurora]   (set OPENAI_API_KEY and/or DATABASE_URL to switch to real services)`,
+      "[aurora]   (set OPENAI_API_KEY / DATABASE_URL / provider keys to switch to real services)",
       "[aurora] ───────────────────────────────",
     ].join("\n"),
   );
@@ -235,4 +245,106 @@ export function metricsPort(): number {
 export function healthCheckIntervalMs(): number {
   const n = parseInt(process.env.HEALTH_CHECK_INTERVAL_MS ?? "30000", 10);
   return Number.isFinite(n) && n >= 0 ? n : 30000;
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Integrations (blueprint §5) — all key-gated; offline stays zero-config    */
+/* -------------------------------------------------------------------------- */
+
+// --- LLM hardening (§5.1) ---------------------------------------------------
+
+/** Per-call timeout for the OpenAI provider (retries run within this window). */
+export function llmTimeoutMs(): number {
+  const n = parseInt(process.env.LLM_TIMEOUT_MS ?? "30000", 10);
+  return Number.isFinite(n) && n > 0 ? n : 30000;
+}
+
+/** Per-turn cost guardrail in CENTS (default $1.00); the turn aborts above it. */
+export function llmMaxCostCents(): number {
+  const n = parseInt(process.env.LLM_MAX_COST_CENTS ?? "100", 10);
+  return Number.isFinite(n) && n >= 0 ? n : 100;
+}
+
+// --- Stripe refunds (§5.4) ----------------------------------------------------
+
+export function stripeSecretKey(): string {
+  return envStr("STRIPE_SECRET_KEY", "");
+}
+
+/** Overridable for tests/compat gateways. */
+export function stripeApiBase(): string {
+  return envStr("STRIPE_API_BASE", "https://api.stripe.com/v1");
+}
+
+// --- EasyPost tracking (§5.3) -------------------------------------------------
+
+export function easypostApiKey(): string {
+  return envStr("EASYPOST_API_KEY", "");
+}
+
+export function easypostApiBase(): string {
+  return envStr("EASYPOST_API_BASE", "https://api.easypost.com");
+}
+
+/** Explicit TRACKING_PROVIDER wins; otherwise easypost is used iff a key is set. */
+export function trackingProvider(): "mock" | "easypost" {
+  const forced = envStr("TRACKING_PROVIDER", "").toLowerCase();
+  if (forced === "easypost" || forced === "mock") return forced;
+  return easypostApiKey() ? "easypost" : "mock";
+}
+
+// --- Resend notifications (§5.5) ----------------------------------------------
+
+export function resendApiKey(): string {
+  return envStr("RESEND_API_KEY", "");
+}
+
+/** Overridable for tests/compat gateways. */
+export function resendApiBase(): string {
+  return envStr("RESEND_API_BASE", "https://api.resend.com");
+}
+
+/** Default on; notifications are still no-ops without a RESEND_API_KEY. */
+export function notificationsEnabled(): boolean {
+  const v = (process.env.NOTIFICATIONS_ENABLED ?? "true").toLowerCase();
+  return v !== "false" && v !== "0" && v !== "no";
+}
+
+export function notificationsFrom(): string {
+  return envStr("NOTIFICATIONS_FROM", "Aurora Support <noreply@aurora-support.local>");
+}
+
+function emailList(name: string): string[] {
+  return envStr(name, "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/** Comma-separated recipients for approval alerts. */
+export function adminEmailList(): string[] {
+  return emailList("ADMIN_EMAIL_LIST");
+}
+
+/** Comma-separated recipients for ticket updates. */
+export function supportTeamEmailList(): string[] {
+  return emailList("SUPPORT_TEAM_EMAIL_LIST");
+}
+
+// --- Background job queue (§5.6) ----------------------------------------------
+
+export function queueProvider(): "memory" | "redis" {
+  const v = envStr("QUEUE_PROVIDER", "memory").toLowerCase();
+  return v === "redis" ? "redis" : "memory";
+}
+
+export function jobMaxRetries(): number {
+  const n = parseInt(process.env.JOB_MAX_RETRIES ?? "3", 10);
+  return Number.isFinite(n) && n >= 1 ? n : 3;
+}
+
+/** Exponential backoff base: base, base*2, base*4 ... (default 1s → 2s → 4s). */
+export function jobRetryBackoffMs(): number {
+  const n = parseInt(process.env.JOB_RETRY_BACKOFF_MS ?? "1000", 10);
+  return Number.isFinite(n) && n > 0 ? n : 1000;
 }

@@ -24,6 +24,8 @@ export interface OrderRow {
   items: string;
   shippingAddress: string;
   trackingNumber: string | null;
+  externalTrackingId: string | null;
+  stripePaymentIntentId: string | null;
   createdAt: number;
   deliveredAt: number | null;
   refundableAmount: number;
@@ -59,6 +61,7 @@ export interface RefundRow {
   status: string;
   approvalId: string | null;
   idempotencyKey: string | null;
+  providerRefundId: string | null;
   createdAt: number;
   processedAt: number | null;
 }

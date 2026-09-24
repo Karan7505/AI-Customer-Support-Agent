@@ -1,6 +1,6 @@
 import type { Repo } from "@/db/repos";
 import { buildSystemPrompt, type LlmClient, type LlmMessage, type LlmPlan } from "./llm";
-import { agentMaxIterations } from "./env";
+import { agentMaxIterations, llmMaxCostCents } from "./env";
 import { authorize, getRiskLevel, visibleToolsFor } from "./policy";
 import { runTool, toolSchemaFor } from "./tools";
 import { createAuditor, type Auditor } from "./audit";
@@ -78,6 +78,7 @@ export function createAgent(repo: Repo, llm: LlmClient) {
     let structured: Record<string, unknown> | undefined;
     let finalized = false;
     let iterations = 0;
+    let turnCostCents = 0;
 
     for (let i = 0; i < maxIter; i++) {
       iterations = i + 1;
@@ -92,6 +93,21 @@ export function createAgent(repo: Repo, llm: LlmClient) {
         throw e;
       }
       logger.debug("llm plan", { model: llm.model, durationMs: nowMs() - planT0, kind: plan.kind });
+
+      // Per-turn LLM cost guardrail (blueprint §5.1): stop before spending more.
+      if (plan.usage) turnCostCents += plan.usage.costCents;
+      if (turnCostCents > llmMaxCostCents()) {
+        logger.warn("llm cost guardrail tripped; stopping turn", {
+          turnCostCents,
+          maxCents: llmMaxCostCents(),
+        });
+        events.push({
+          type: "error",
+          code: "COST_LIMIT",
+          message: "Stopped: this turn exceeded the LLM cost guardrail (LLM_MAX_COST_CENTS).",
+        });
+        break;
+      }
 
       if (plan.kind === "final") {
         finalText = plan.text;
@@ -200,7 +216,7 @@ export function createAgent(repo: Repo, llm: LlmClient) {
       result: { iterationsUsed: calledOnce.size + 1, finalText: finalText.slice(0, 200) },
       status: finalized ? "success" : "failure",
       durationMs: turnMs,
-      metadata: { iterations, toolCalls: calledOnce.size, finalized },
+      metadata: { iterations, toolCalls: calledOnce.size, finalized, llmCostCents: turnCostCents },
     });
     chatRequestsTotal.inc({ result: finalized ? "success" : "max_iterations" });
     logger.info("agent turn complete", { role: principal.role, iterations, toolCalls: calledOnce.size, durationMs: turnMs, finalized });

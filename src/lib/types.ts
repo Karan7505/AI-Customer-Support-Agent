@@ -43,6 +43,10 @@ export interface Order {
   items: OrderItem[];
   shippingAddress: ShippingAddress;
   trackingNumber: string | null;
+  /** Carrier/3PL shipment id (e.g. EasyPost), when one exists. */
+  externalTrackingId: string | null;
+  /** Payment provider charge id (e.g. Stripe PaymentIntent), when one exists. */
+  stripePaymentIntentId: string | null;
   createdAt: number;
   deliveredAt: number | null;
   refundableAmount: number; // cents remaining
@@ -87,6 +91,8 @@ export interface Refund {
   status: RefundStatus;
   approvalId: string | null;
   idempotencyKey: string | null;
+  /** Provider-side refund id (e.g. Stripe refund id), once confirmed. */
+  providerRefundId: string | null;
   createdAt: number;
   processedAt: number | null;
 }

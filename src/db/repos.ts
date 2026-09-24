@@ -46,6 +46,8 @@ function mapOrder(row: OrderRow): Order {
       country: "",
     }),
     trackingNumber: row.trackingNumber,
+    externalTrackingId: row.externalTrackingId ?? null,
+    stripePaymentIntentId: row.stripePaymentIntentId ?? null,
     createdAt: row.createdAt,
     deliveredAt: row.deliveredAt,
     refundableAmount: row.refundableAmount,
@@ -66,6 +68,7 @@ export interface Repo {
   createOrder: (o: {
     id: string; customerId: string; status: string; total: number; currency: string;
     items: string; shippingAddress: string; trackingNumber: string | null;
+    externalTrackingId?: string | null; stripePaymentIntentId?: string | null;
     createdAt: number; deliveredAt: number | null; refundableAmount: number;
   }) => Promise<void>;
   getOrdersByCustomer: (customerId: string) => Promise<Order[]>;
@@ -95,7 +98,7 @@ export interface Repo {
   getRefundsByCustomer: (customerId: string) => Promise<RefundRow[]>;
   getRefundByApprovalId: (approvalId: string) => Promise<RefundRow | undefined>;
   getOpenRefundForOrder: (orderId: string) => Promise<RefundRow | undefined>;
-  updateRefund: (id: string, patch: Partial<Pick<RefundRow, "status" | "processedAt" | "approvalId" | "idempotencyKey">>) => Promise<void>;
+  updateRefund: (id: string, patch: Partial<Pick<RefundRow, "status" | "processedAt" | "approvalId" | "idempotencyKey" | "providerRefundId">>) => Promise<void>;
 
   // approvals
   createApproval: (a: {
@@ -174,6 +177,7 @@ export function createSqliteRepo(db: AppDatabase): Repo {
       await db.insert(s.orders).values({
         id: o.id, customerId: o.customerId, status: o.status, total: o.total, currency: o.currency,
         items: o.items, shippingAddress: o.shippingAddress, trackingNumber: o.trackingNumber,
+        externalTrackingId: o.externalTrackingId ?? null, stripePaymentIntentId: o.stripePaymentIntentId ?? null,
         createdAt: o.createdAt, deliveredAt: o.deliveredAt, refundableAmount: o.refundableAmount,
       }).run();
     },
@@ -444,6 +448,7 @@ export function createPostgresRepo(db: PgDatabase): Repo {
       await db.insert(pg.orders).values({
         id: o.id, customerId: o.customerId, status: o.status, total: o.total, currency: o.currency,
         items: o.items, shippingAddress: o.shippingAddress, trackingNumber: o.trackingNumber,
+        externalTrackingId: o.externalTrackingId ?? null, stripePaymentIntentId: o.stripePaymentIntentId ?? null,
         createdAt: o.createdAt, deliveredAt: o.deliveredAt, refundableAmount: o.refundableAmount,
       });
     },

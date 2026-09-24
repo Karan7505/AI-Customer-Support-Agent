@@ -75,6 +75,9 @@ async function seed(repo: Repo) {
     await repo.createOrder({
       id: o.id, customerId: o.customerId, status: o.status, total: o.total, currency: o.currency,
       items: JSON.stringify(o.items), shippingAddress: JSON.stringify(o.address), trackingNumber: o.trackingNumber,
+      // Mock Stripe PaymentIntent ids so the refund path can be exercised end-to-end
+      // without a live key. "pi_mock_" prefix tells the provider layer to no-op.
+      stripePaymentIntentId: `pi_mock_${o.id}`,
       createdAt: o.createdAt, deliveredAt: o.deliveredAt, refundableAmount: o.refundableAmount,
     });
   }

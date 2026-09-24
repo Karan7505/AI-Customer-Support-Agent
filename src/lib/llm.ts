@@ -23,14 +23,22 @@ export interface LlmMessage {
   toolCalls?: { id: string; name: string; arguments: string }[];
 }
 
+export interface LlmUsage {
+  inputTokens: number;
+  outputTokens: number;
+  /** Estimated cost in cents (0 for unknown models / mock). */
+  costCents: number;
+}
+
 export type LlmPlan =
   | {
       kind: "tool";
       tool: string;
       args: Record<string, unknown>;
       toolCallId?: string;
+      usage?: LlmUsage;
     }
-  | { kind: "final"; text: string; cards?: AgentCard[] };
+  | { kind: "final"; text: string; cards?: AgentCard[]; usage?: LlmUsage };
 
 export interface LlmClient {
   readonly provider: "mock" | "openai";

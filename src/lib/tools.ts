@@ -11,7 +11,6 @@ import type {
   TicketNote,
   TicketPriority,
   ToolResult,
-  TrackingStatus,
 } from "./types";
 import {
   CreateSupportTicketInput,
@@ -34,6 +33,8 @@ import {
   refundRequestKey,
 } from "./refunds";
 import { createApproval, mapApproval } from "./approvals";
+import { resolveTracking } from "./tracking";
+import { notifyEvent } from "./notify";
 import type { Auditor } from "./audit";
 
 export interface ToolContext {
@@ -149,65 +150,7 @@ async function resolveTicketCustomer(ctx: ToolContext, order: Order | null, requ
   return order ? order.customerId : ctx.principal.id;
 }
 
-/** Deterministic, realistic mock tracking derived from the order. */
-function mockTracking(order: Order): TrackingStatus {
-  const base = order.createdAt;
-  const day = 24 * 60 * 60 * 1000;
-  const events: TrackingStatus["events"] = [
-    { location: "Warehouse", description: "Order packed and ready for pickup", at: base + 1 * day },
-  ];
-  const status = order.status;
-  if (status === "shipped" || status === "delivered") {
-    events.push({ location: "Distribution Center", description: "Picked up by carrier", at: base + 2 * day });
-  }
-  if (status === "shipped") {
-    events.push({
-      location: "In Transit",
-      description: "In transit to your area",
-      at: Math.min(nowMs(), base + 3 * day),
-    });
-    return {
-      orderId: order.id,
-      trackingNumber: order.trackingNumber ?? `TRK-${order.id.replace("ORD-", "")}-1`,
-      // Track the order's canonical status so UI/eval wording is consistent.
-      status: order.status,
-      events,
-      eta: new Date(base + 6 * day).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-      delivered: false,
-    };
-  }
-  if (status === "delivered") {
-    events.push({
-      location: "Local Facility",
-      description: "Out for delivery",
-      at: base + 4 * day,
-    });
-    events.push({
-      location: order.shippingAddress.city,
-      description: "Delivered",
-      at: order.deliveredAt ?? base + 5 * day,
-    });
-    return {
-      orderId: order.id,
-      trackingNumber: order.trackingNumber ?? `TRK-${order.id.replace("ORD-", "")}-1`,
-      status: "delivered",
-      events,
-      eta: null,
-      delivered: true,
-    };
-  }
-  return {
-    orderId: order.id,
-    trackingNumber: order.trackingNumber,
-    status: status,
-    events,
-    eta:
-      status === "processing" || status === "pending"
-        ? new Date(base + 7 * day).toLocaleDateString("en-US", { month: "short", day: "numeric" })
-        : null,
-    delivered: false,
-  };
-}
+
 
 // ---- tool handlers --------------------------------------------------------
 
@@ -254,8 +197,8 @@ const get_tracking_status: ToolSpec = {
   handler: async (ctx, raw) => {
     const { orderId } = validate(GetTrackingStatusInput, raw);
     const order = await findOrderFor(ctx, orderId);
-    const tracking = mockTracking(order);
-    return { ok: true, data: { order, tracking } };
+    const { tracking, source, cacheHit } = await resolveTracking(order);
+    return { ok: true, data: { order, tracking, trackingSource: source, trackingCacheHit: cacheHit } };
   },
 };
 
@@ -307,6 +250,7 @@ const create_support_ticket: ToolSpec = {
       "ticket.created",
       { toolName: "create_support_ticket", arguments: args, result: { ticketId: id }, status: "success" },
     );
+    notifyEvent("ticket_created", { ticketId: id, customerId, subject: args.subject });
     return { ok: true, data: { ticket } };
   },
 };
@@ -605,6 +549,15 @@ const update_support_ticket: ToolSpec = {
         status: "success",
       },
     );
+    // Note-only updates are internal (agent handling thread) — no customer email.
+    if (!args.note) {
+      notifyEvent("ticket_updated", {
+        ticketId: ticket.id,
+        customerId: ticket.customerId,
+        status: ticket.status,
+        priority: ticket.priority,
+      });
+    }
     return { ok: true, data: { ticket } };
   },
 };

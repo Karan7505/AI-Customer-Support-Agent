@@ -403,6 +403,60 @@ completed, failed` — clearly distinguished in the UI.
 
 ---
 
+## External integrations (all key-gated; offline stays zero-config)
+
+Every integration below is a **mock/offline default**. Setting the provider key
+switches that one concern to live; everything else is untouched.
+
+**LLM (OpenAI-compatible, §5.1).** Auto when `OPENAI_API_KEY` is set
+(`gpt-4o-mini` default, `OPENAI_MODEL` overrides). Hardened with a
+`LLM_TIMEOUT_MS` per-call timeout (30s), 3 retries with 1s→2s→4s backoff for
+transient failures only (408/429/5xx, network, timeout — never auth errors),
+per-call token/cost logging, and a per-turn cost guardrail
+(`LLM_MAX_COST_CENTS`, default 100 = $1.00). If the provider ultimately
+fails, the factory transparently falls back to the mock planner with a
+warning (real key configured). Live test: `OPENAI_API_KEY=... npm run
+test:live -- openai` (skipped in normal runs/CI without a key).
+
+**Carrier tracking (EasyPost, §5.3).** Auto when `EASYPOST_API_KEY` is set
+(`TRACKING_PROVIDER=mock` forces mock). `get_tracking_status` calls
+`GET /v2/trackings/{number}`, caches results in memory for 1h, and falls back
+to the deterministic mock data with a warning if the provider errors. Every
+resolution logs carrier, tracking number, source (`easypost`|`mock`), cache
+hit and latency. Orders may carry an `external_tracking_id` (carrier shipment
+id) for future write paths.
+
+**Refunds (Stripe, §5.4).** The database is the **source of truth**; Stripe is
+the money replica. A refund is applied to the DB first (transactional,
+idempotent), then pushed to Stripe with the refund's idempotency key — so a
+retry after an unknown-outcome network error can never double-refund. With
+`STRIPE_SECRET_KEY` set and the order carrying a real
+`stripe_payment_intent_id`: success records `provider_refund_id`; a provider
+failure marks the refund `pending_execution` (UI: "Awaiting provider") and the
+job queue retries it in the background with the same idempotency key; a
+re-execution of the same approval self-heals the provider call. Seed orders
+carry `pi_mock_*` ids, which always skip the provider, and without a key the
+provider step is skipped entirely — DB-only refunds work offline.
+
+**Email notifications (Resend, §5.5).** `NOTIFICATIONS_ENABLED` (default
+true) + `RESEND_API_KEY` (no key → debug log, no-op). Events:
+`ticket_created` → customer; `ticket_updated` → customer +
+`SUPPORT_TEAM_EMAIL_LIST`; `approval_requested` → `ADMIN_EMAIL_LIST`;
+`approval_result` → customer. Delivery is fire-and-forget through the job
+queue (retries + final failure log); existing audit entries are unchanged.
+From address: `NOTIFICATIONS_FROM`.
+
+**Background job queue (§5.6).** In-process memory queue (default,
+`QUEUE_PROVIDER=memory`) processes `send_email_notification`,
+`execute_refund_fallback` and `escalate_ticket` jobs with retries
+(`JOB_MAX_RETRIES`=3, exponential backoff from `JOB_RETRY_BACKOFF_MS`=1s →
+1s/2s/4s), dedupe keys, and audit entries (`job.completed` / `job.retried` /
+`job.failed`) under the `system` principal. **Redis is a documented
+extension point** (blueprint calls it "optional later"): `QUEUE_PROVIDER=redis`
+fails fast with instructions; implement a BullMQ-backed `JobQueue` (interface
+in `src/lib/queue.ts`) to enable it. Refund state survives queue loss: a
+`pending_execution` refund is retried the next time its approval is executed.
+
 ## Observability & audit
 
 **Structured logging.** All server logs are emitted as one-line JSON
@@ -526,7 +580,19 @@ the app runs with **no** variables set.
 | `METRICS_PORT` | no | `9090` | Metrics exporter port (localhost-only). |
 | `HEALTH_CHECK_INTERVAL_MS` | no | `30000` | `/health/ready` probe cache TTL; 0 disables caching. |
 | `REDIS_URL` | no | — | If set, probed by readiness (degraded, never blocking). |
-| `STRIPE_SECRET_KEY` | no | — | If set, probed by readiness (degraded, never blocking). Never commit. |
+| `STRIPE_SECRET_KEY` | no | — | Enables live Stripe refunds + readiness probe. Never commit. |
+| `LLM_TIMEOUT_MS` | no | `30000` | Per-call OpenAI timeout (ms). |
+| `LLM_MAX_COST_CENTS` | no | `100` | Per-turn LLM cost guardrail (cents); turn stops above it. |
+| `TRACKING_PROVIDER` | no | auto | `mock` \| `easypost`; auto = easypost iff key set. |
+| `EASYPOST_API_KEY` | no | — | Enables live carrier tracking. Never commit. |
+| `NOTIFICATIONS_ENABLED` | no | `true` | Master switch for email notifications. |
+| `RESEND_API_KEY` | no | — | Enables live email delivery (no key → no-ops). Never commit. |
+| `NOTIFICATIONS_FROM` | no | `Aurora Support <…>` | Sender address for notifications. |
+| `ADMIN_EMAIL_LIST` | no | — | Comma-separated recipients for approval alerts. |
+| `SUPPORT_TEAM_EMAIL_LIST` | no | — | Comma-separated recipients for ticket updates. |
+| `QUEUE_PROVIDER` | no | `memory` | Job queue provider (`redis` = extension point). |
+| `JOB_MAX_RETRIES` | no | `3` | Max attempts per background job. |
+| `JOB_RETRY_BACKOFF_MS` | no | `1000` | Exponential backoff base (1s → 2s → 4s). |
 
 The mode banner (see [Runtime modes](#runtime-modes--how-it-auto-switches)) shows
 which values took effect, without ever printing the key or URL themselves.

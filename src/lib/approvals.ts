@@ -5,6 +5,7 @@ import { approvalTtlMs } from "./env";
 import { nowMs } from "./util";
 import { logger } from "./logger";
 import { approvalRequestsTotal, approvalDecisionsTotal, approvalQueueLength } from "./metrics";
+import { notifyEvent } from "./notify";
 import type { ApprovalRequest, Principal, Refund } from "./types";
 import type { Auditor } from "./audit";
 import { executeRefund, mapRefund } from "./refund-execution";
@@ -134,6 +135,12 @@ export async function createApproval(
       metadata: { riskLevel: opts.riskLevel },
     },
   );
+  notifyEvent("approval_requested", {
+    approvalId: ap.id,
+    orderId: opts.orderId ?? null,
+    amountCents: opts.amountCents ?? null,
+    toolName: opts.toolName,
+  });
   await refreshQueueGauge(repo);
   return ap;
 }
@@ -203,6 +210,14 @@ export async function decideApproval(
       metadata: { decision: to },
     },
   );
+  notifyEvent("approval_result", {
+    approvalId: current.id,
+    customerId: ((current.arguments as { customerId?: string })?.customerId) ?? null,
+    orderId: current.orderId,
+    amountCents: current.amountCents,
+    approved: opts.approve,
+    reason: opts.reason ?? null,
+  });
   await refreshQueueGauge(repo);
   return updated;
 }

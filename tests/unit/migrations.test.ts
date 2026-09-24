@@ -38,7 +38,7 @@ describe("Versioned migrations (sqlite)", () => {
 
   it("applies the base migration and records name/checksum/timestamp", () => {
     raw = fresh();
-    expect(runSqliteMigrations(raw)).toBe(2); // 001_initial + 002_audit_enrichment
+    expect(runSqliteMigrations(raw)).toBe(3); // 001_initial + 002_audit_enrichment + 003_integration_columns
     expect(tablesOf(raw).sort()).toEqual([...EXPECTED_TABLES, "migrations"].sort());
     const row = raw.prepare("SELECT name, checksum, applied_at FROM migrations").get() as any;
     expect(row.name).toBe(BASE);
@@ -50,7 +50,7 @@ describe("Versioned migrations (sqlite)", () => {
     raw = fresh();
     runSqliteMigrations(raw);
     expect(runSqliteMigrations(raw)).toBe(0);
-    expect((raw.prepare("SELECT COUNT(*) c FROM migrations").get() as any).c).toBe(2);
+    expect((raw.prepare("SELECT COUNT(*) c FROM migrations").get() as any).c).toBe(3);
   });
 
   it("refuses to run when an applied migration was modified (checksum mismatch)", () => {
@@ -70,7 +70,7 @@ describe("Versioned migrations (sqlite)", () => {
     try {
       expect(() => runSqliteMigrations(db)).toThrow(); // the bad 999 migration fails the run
       const names = (db.prepare("SELECT name FROM migrations").all() as any[]).map((r) => r.name);
-      expect(names).toEqual([BASE, "002_audit_enrichment.sql"]); // failed migration NOT recorded → retriable
+      expect(names).toEqual([BASE, "002_audit_enrichment.sql", "003_integration_columns.sql"]); // failed migration NOT recorded → retriable
     } finally {
       if (fs.existsSync(bad)) fs.rmSync(bad);
     }

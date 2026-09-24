@@ -14,6 +14,8 @@ export const REFUND_STATUS = [
   "rejected",
   "processing",
   "completed",
+  /** DB refund applied, but the payment-provider refund is still in flight (job queue retries). */
+  "pending_execution",
   "failed",
 ] as const;
 export type RefundStatus = (typeof REFUND_STATUS)[number];
@@ -44,6 +46,8 @@ export const orders = pgTable(
     items: text("items").notNull(),
     shippingAddress: text("shippingAddress").notNull(),
     trackingNumber: text("trackingNumber"),
+    externalTrackingId: text("externalTrackingId"),
+    stripePaymentIntentId: text("stripePaymentIntentId"),
     createdAt: integer("createdAt").notNull(),
     deliveredAt: integer("deliveredAt"),
     refundableAmount: integer("refundableAmount").notNull(),
@@ -79,6 +83,7 @@ export const refunds = pgTable(
     status: text("status").notNull().default("requested"),
     approvalId: text("approvalId"),
     idempotencyKey: text("idempotencyKey").unique(),
+    providerRefundId: text("providerRefundId"),
     createdAt: integer("createdAt").notNull(),
     processedAt: integer("processedAt"),
   },
