@@ -529,6 +529,33 @@ payment intent in Stripe first (the refund may exist under a different id);
 never re-issue a refund from the app for an `orphaned` row without an ops
 sign-off; reconcile balances from the DB, not from Stripe.
 
+## Docker & deployment (§11)
+
+Production packaging is the multi-stage **Dockerfile** (`node:24-alpine`):
+`deps` (prod `npm ci`) → `builder` (Next **standalone** build + esbuild bundle
+of the migration CLI) → `runner` (non-root; `server.js` + static assets +
+`migrations/`).
+
+**Boot gate (§11.2/§11.3).** Under `NODE_ENV=production` the app refuses to
+start without a valid `DATABASE_URL` (postgres://) and `SESSION_SECRET` — and
+the entrypoint runs schema migrations (`node migrate.mjs`) **before**
+`server.js` starts, so a bad env or a failing migration never serves traffic.
+Local development is unchanged: `npm run dev` (SQLite, zero-config); note that
+a local `next start` (production mode) now requires a Postgres `DATABASE_URL`
+by design.
+
+```sh
+docker build -t aurora-support:prod .
+docker run --env-file .env.prod -p 3000:3000 aurora-support:prod
+```
+
+CI validates the image on every gated branch (`docker-build` job); registry
+push, Trivy scanning and platform deploys are owner actions (the `deploy`
+skeleton in `.github/workflows/ci-cd.yml` is already wired for ECR/ECS).
+Runbooks: [deploy](docs/runbooks/deploy.md) ·
+[rollback](docs/runbooks/rollback.md) ·
+[incident response](docs/runbooks/incident-response.md).
+
 ## Observability & audit
 
 **Structured logging.** All server logs are emitted as one-line JSON

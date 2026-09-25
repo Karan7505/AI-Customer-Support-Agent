@@ -113,6 +113,17 @@ jobs:
       - run: npm ci
       - run: npm run build
 
+  # Docker image build (blueprint §11.1) — validates the multi-stage
+  # Dockerfile on every gated branch. Registry push + Trivy run in the
+  # deploy job once the owner enables it (owner action).
+  docker-build:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build production image
+        run: docker build -t aurora-support:ci .
+
   # ---------------------------------------------------------------------------
   # DEPLOY (skeleton — blueprint §11.2/11.4). Inert until ALL of:
   #   1. the owner sets the repo variable DEPLOY_ENABLED=true,

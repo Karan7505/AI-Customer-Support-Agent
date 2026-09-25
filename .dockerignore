@@ -1,0 +1,16 @@
+# Build context trimming — the builder stage only needs source + manifests.
+.git
+node_modules
+.next
+out
+data
+*.db
+*.db-journal
+tests
+test-results
+playwright-report
+coverage
+docs
+.env
+.env.*
+!.env.example

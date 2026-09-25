@@ -102,7 +102,7 @@ function loadNodeModules(): { fs: typeof import("node:fs"); path: typeof import(
 }
 
 /** Read a value straight from a raw .env file (used at boot, before Next loads env). */
-function envFileValue(dir: string, filenames: string[], key: string): string | undefined {
+export function envFileValue(dir: string, filenames: string[], key: string): string | undefined {
   const mods = loadNodeModules();
   if (!mods) return undefined;
   for (const name of filenames) {

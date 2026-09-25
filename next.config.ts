@@ -30,6 +30,10 @@ const cspHeader = {
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  // Docker deployment (blueprint §11.1): self-contained server bundle that
+  // `server.js` can run without the full project tree. Local `next dev` /
+  // `next start` workflows are unaffected.
+  output: "standalone",
   // better-sqlite3 is a native Node module; keep it out of the webpack bundle.
   serverExternalPackages: ["better-sqlite3"],
   async headers() {
