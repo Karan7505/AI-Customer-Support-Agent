@@ -33,6 +33,17 @@ interface EmailJobPayload {
   payload: Record<string, unknown>;
 }
 
+/** Per-customer email opt-out via notification_preferences (§6.3). */
+function emailOptedOut(row: { notificationPreferences?: string | null } | undefined | null): boolean {
+  if (!row || !row.notificationPreferences) return false;
+  try {
+    const p = JSON.parse(row.notificationPreferences) as { email?: unknown };
+    return p.email === false;
+  } catch {
+    return false; // malformed preferences never silently stop notifications
+  }
+}
+
 function dedupeKeyFor(event: NotifyEvent, payload: Record<string, unknown>): string {
   if (event === "account_verification" || event === "password_reset") {
     return `email:${event}:${String(payload.token ?? "")}`;
@@ -84,7 +95,7 @@ const handleEmailJob: JobHandler = async (job, ctx) => {
   } else {
     if (customerId) {
       const c = await ctx.repo.getCustomer(customerId);
-      if (c?.email) recipients.push(c.email);
+      if (c?.email && !emailOptedOut(c)) recipients.push(c.email);
       customerName = c?.name;
     }
     if (event === "ticket_updated") recipients.push(...supportTeamEmailList());

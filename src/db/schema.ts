@@ -89,6 +89,10 @@ export const customers = sqliteTable("customers", {
   emailResetSentAt: integer("email_reset_sent_at"),
   /** Soft-delete marker (epoch ms). Set => account deactivated, login blocked. */
   deactivatedAt: integer("deactivated_at"),
+  /** Data-retention soft-delete (epoch ms). Set => hidden from all queries (§6.6). */
+  deletedAt: integer("deleted_at"),
+  /** JSON notification opt-out preferences, e.g. {"email": false} (§6.3). */
+  notificationPreferences: text("notification_preferences"),
 });
 
 export const orders = sqliteTable(
@@ -111,6 +115,8 @@ export const orders = sqliteTable(
     createdAt: integer("created_at").notNull(),
     deliveredAt: integer("delivered_at"),
     refundableAmount: integer("refundable_amount").notNull(), // remaining refundable cents
+    /** Data-retention soft-delete (epoch ms); NULL = active (§6.6). */
+    deletedAt: integer("deleted_at"),
   },
   (t) => [index("idx_orders_customer").on(t.customerId)],
 );
@@ -133,6 +139,8 @@ export const supportTickets = sqliteTable(
     idempotencyKey: text("idempotency_key"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
+    /** Data-retention soft-delete (epoch ms); NULL = active (§6.6). */
+    deletedAt: integer("deleted_at"),
   },
   (t) => [index("idx_tickets_customer").on(t.customerId)],
 );
@@ -223,6 +231,8 @@ export const conversations = sqliteTable(
       .references(() => customers.id),
     title: text("title").notNull().default("New conversation"),
     createdAt: integer("created_at").notNull(),
+    /** Data-retention soft-delete (epoch ms); NULL = active (§6.6). */
+    deletedAt: integer("deleted_at"),
   },
   (t) => [index("idx_conv_customer").on(t.customerId)],
 );
@@ -238,9 +248,27 @@ export const messages = sqliteTable(
     content: text("content").notNull(),
     meta: text("meta"), // JSON: tool name, structured result, card payload
     createdAt: integer("created_at").notNull(),
+    /** Data-retention soft-delete (epoch ms); NULL = active (§6.6). */
+    deletedAt: integer("deleted_at"),
   },
   (t) => [index("idx_messages_conv").on(t.conversationId)],
 );
+
+/** Retention policy tracking (blueprint §6.3); maintained by the retention job. */
+export const dataRetentionPolicy = sqliteTable("data_retention_policy", {
+  tableName: text("table_name").primaryKey(),
+  retentionDays: integer("retention_days").notNull(),
+  lastCleanup: integer("last_cleanup"),
+});
+
+/** Background health-check bookkeeping (blueprint §6.3). */
+export const healthChecks = sqliteTable("health_checks", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  checkName: text("check_name").notNull(),
+  status: text("status").notNull(),
+  lastRun: integer("last_run"),
+  nextRun: integer("next_run"),
+});
 
 export type CustomerRow = typeof customers.$inferSelect;
 export type OrderRow = typeof orders.$inferSelect;
@@ -251,3 +279,5 @@ export type AuditLogRow = typeof auditLogs.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type ConversationRow = typeof conversations.$inferSelect;
 export type MessageRow = typeof messages.$inferSelect;
+export type DataRetentionPolicyRow = typeof dataRetentionPolicy.$inferSelect;
+export type HealthCheckRow = typeof healthChecks.$inferSelect;

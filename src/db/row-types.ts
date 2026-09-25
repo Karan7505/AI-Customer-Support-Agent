@@ -21,6 +21,10 @@ export interface CustomerRow {
   emailResetSentAt: number | null;
   /** Soft-delete marker (epoch ms); set => deactivated. */
   deactivatedAt: number | null;
+  /** Data-retention soft-delete (epoch ms); set => hidden from queries (§6.6). */
+  deletedAt: number | null;
+  /** JSON string of notification opt-out preferences, e.g. {"email": false}. */
+  notificationPreferences: string | null;
 }
 
 export interface OrderRow {
@@ -37,6 +41,8 @@ export interface OrderRow {
   createdAt: number;
   deliveredAt: number | null;
   refundableAmount: number;
+  /** Data-retention soft-delete (epoch ms); NULL = active (§6.6). */
+  deletedAt: number | null;
 }
 
 export interface TicketNote {
@@ -60,6 +66,8 @@ export interface SupportTicketRow {
   idempotencyKey: string | null;
   createdAt: number;
   updatedAt: number;
+  /** Data-retention soft-delete (epoch ms); NULL = active (§6.6). */
+  deletedAt: number | null;
 }
 
 export interface RefundRow {
@@ -129,6 +137,8 @@ export interface ConversationRow {
   customerId: string;
   title: string;
   createdAt: number;
+  /** Data-retention soft-delete (epoch ms); NULL = active (§6.6). */
+  deletedAt: number | null;
 }
 
 export interface MessageRow {
@@ -138,4 +148,13 @@ export interface MessageRow {
   content: string;
   meta: string | null;
   createdAt: number;
+  /** Data-retention soft-delete (epoch ms); NULL = active (§6.6). */
+  deletedAt: number | null;
+}
+
+/** Retention policy tracking row (blueprint §6.3). */
+export interface DataRetentionPolicyRow {
+  tableName: string;
+  retentionDays: number;
+  lastCleanup: number | null;
 }

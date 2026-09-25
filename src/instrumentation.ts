@@ -38,4 +38,9 @@ export async function register() {
     const { checkPostgresBoot } = await import("@/db/postgres-check");
     await checkPostgresBoot();
   }
+
+  // Data lifecycle (blueprint §6.6) starts lazily on first use of the default
+  // job queue (src/lib/queue.ts → retention.ts) — NOT from here: any import
+  // that reaches the DB layer (better-sqlite3) would break the edge bundle
+  // this file is also compiled for.
 }

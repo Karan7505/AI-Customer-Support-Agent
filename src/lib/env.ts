@@ -396,6 +396,23 @@ export function llmDailyCostCents(): number {
   return envInt("LLM_DAILY_COST_CENTS", 5000);
 }
 
+// --- Data lifecycle (blueprint §6.6) -----------------------------------------
+
+/** Customer PII retention in years (default 1). */
+export function dataRetentionCustomerYears(): number {
+  return envInt("DATA_RETENTION_CUSTOMER_YEARS", 1);
+}
+
+/** Audit log retention in years (default 3). */
+export function dataRetentionAuditYears(): number {
+  return envInt("DATA_RETENTION_AUDIT_YEARS", 3);
+}
+
+/** Reserved for the future cold-storage archiving path (default true). */
+export function dataRetentionArchiveEnabled(): boolean {
+  return envStr("DATA_RETENTION_ARCHIVE_ENABLED", "true") === "true";
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Identity lifecycle (blueprint §7.1 / §7.4)                                 */
 /* -------------------------------------------------------------------------- */

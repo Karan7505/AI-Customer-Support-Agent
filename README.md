@@ -556,6 +556,30 @@ Runbooks: [deploy](docs/runbooks/deploy.md) ·
 [rollback](docs/runbooks/rollback.md) ·
 [incident response](docs/runbooks/incident-response.md).
 
+## Data lifecycle & retention (§6.3/§6.6)
+
+- **Soft delete** — `customers`, `orders`, `support_tickets`,
+  `conversations`, `messages` carry `deleted_at` (migration 006). Every repo
+  read path filters `deleted_at IS NULL`, so erased data is invisible
+  everywhere (login, chat, admin views).
+- **Weekly retention sweep** (`retention_cleanup` job — runs at boot, then
+  weekly): customers after **1 year**, orders/tickets/conversations/messages
+  after **2 years** (soft-delete), audit logs after **3 years** (hard delete,
+  compliance horizon), **refunds retained forever** (financial records).
+  Each sweep is audited (`retention.cleanup` with per-table counts) and
+  tracked in `data_retention_policy`. Tunable via
+  `DATA_RETENTION_CUSTOMER_YEARS` / `DATA_RETENTION_AUDIT_YEARS`.
+- **Erasure endpoint (GDPR/CCPA)** — `POST /api/admin/soft-delete-customer`
+  `{customerId}` (admin only) soft-deletes the customer row and all of their
+  data except refunds/audit; audited as `customer.data_soft_deleted`.
+- **Notification preferences** — `customers.notification_preferences` JSON:
+  `{"email": false}` opts the customer out of transactional email (support
+  team / admin lists are unaffected).
+- **Backup & DR** — managed-Postgres snapshots + PITR (RTO ~1h / RPO ~15min,
+  30-day retention, monthly restore drill); self-hosted nightly `pg_dump`
+  with quarterly restore tests. See
+  [backup-restore runbook](docs/runbooks/backup-restore.md).
+
 ## Observability & audit
 
 **Structured logging.** All server logs are emitted as one-line JSON

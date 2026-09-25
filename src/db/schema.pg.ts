@@ -39,6 +39,10 @@ export const customers = pgTable("customers", {
   emailResetToken: text("emailResetToken"),
   emailResetSentAt: integer("emailResetSentAt"),
   deactivatedAt: integer("deactivatedAt"),
+  /** Data-retention soft-delete (epoch ms). Set => hidden from all queries (§6.6). */
+  deletedAt: integer("deletedAt"),
+  /** JSON notification opt-out preferences, e.g. {"email": false} (§6.3). */
+  notificationPreferences: text("notificationPreferences"),
 });
 
 export const orders = pgTable(
@@ -57,6 +61,8 @@ export const orders = pgTable(
     createdAt: integer("createdAt").notNull(),
     deliveredAt: integer("deliveredAt"),
     refundableAmount: integer("refundableAmount").notNull(),
+    /** Data-retention soft-delete (epoch ms); NULL = active (§6.6). */
+    deletedAt: integer("deletedAt"),
   },
   (t) => [index("idx_orders_customer").on(t.customerId)],
 );
@@ -76,6 +82,8 @@ export const supportTickets = pgTable(
     idempotencyKey: text("idempotencyKey"),
     createdAt: integer("createdAt").notNull(),
     updatedAt: integer("updatedAt").notNull(),
+    /** Data-retention soft-delete (epoch ms); NULL = active (§6.6). */
+    deletedAt: integer("deletedAt"),
   },
   (t) => [index("idx_tickets_customer").on(t.customerId)],
 );
@@ -152,6 +160,8 @@ export const conversations = pgTable(
     customerId: text("customerId").notNull().references(() => customers.id),
     title: text("title").notNull().default("New conversation"),
     createdAt: integer("createdAt").notNull(),
+    /** Data-retention soft-delete (epoch ms); NULL = active (§6.6). */
+    deletedAt: integer("deletedAt"),
   },
   (t) => [index("idx_conv_customer").on(t.customerId)],
 );
@@ -165,6 +175,24 @@ export const messages = pgTable(
     content: text("content").notNull(),
     meta: text("meta"),
     createdAt: integer("createdAt").notNull(),
+    /** Data-retention soft-delete (epoch ms); NULL = active (§6.6). */
+    deletedAt: integer("deletedAt"),
   },
   (t) => [index("idx_messages_conv").on(t.conversationId)],
 );
+
+/** Retention policy tracking (blueprint §6.3); maintained by the retention job. */
+export const dataRetentionPolicy = pgTable("data_retention_policy", {
+  tableName: text("tableName").primaryKey(),
+  retentionDays: integer("retentionDays").notNull(),
+  lastCleanup: integer("lastCleanup"),
+});
+
+/** Background health-check bookkeeping (blueprint §6.3). */
+export const healthChecks = pgTable("health_checks", {
+  id: serial("id").primaryKey(),
+  checkName: text("checkName").notNull(),
+  status: text("status").notNull(),
+  lastRun: integer("lastRun"),
+  nextRun: integer("nextRun"),
+});

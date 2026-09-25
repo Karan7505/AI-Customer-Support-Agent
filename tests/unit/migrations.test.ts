@@ -16,6 +16,8 @@ const EXPECTED_TABLES = [
   "sessions",
   "conversations",
   "messages",
+  "data_retention_policy",
+  "health_checks",
 ];
 
 const fresh = () => {
@@ -38,7 +40,7 @@ describe("Versioned migrations (sqlite)", () => {
 
   it("applies the base migration and records name/checksum/timestamp", () => {
     raw = fresh();
-    expect(runSqliteMigrations(raw)).toBe(5); // 001..005
+    expect(runSqliteMigrations(raw)).toBe(6); // 001..006
     expect(tablesOf(raw).sort()).toEqual([...EXPECTED_TABLES, "migrations"].sort());
     const row = raw.prepare("SELECT name, checksum, applied_at FROM migrations").get() as any;
     expect(row.name).toBe(BASE);
@@ -50,7 +52,7 @@ describe("Versioned migrations (sqlite)", () => {
     raw = fresh();
     runSqliteMigrations(raw);
     expect(runSqliteMigrations(raw)).toBe(0);
-    expect((raw.prepare("SELECT COUNT(*) c FROM migrations").get() as any).c).toBe(5);
+    expect((raw.prepare("SELECT COUNT(*) c FROM migrations").get() as any).c).toBe(6);
   });
 
   it("refuses to run when an applied migration was modified (checksum mismatch)", () => {
@@ -70,7 +72,7 @@ describe("Versioned migrations (sqlite)", () => {
     try {
       expect(() => runSqliteMigrations(db)).toThrow(); // the bad 999 migration fails the run
       const names = (db.prepare("SELECT name FROM migrations").all() as any[]).map((r) => r.name);
-      expect(names).toEqual([BASE, "002_audit_enrichment.sql", "003_integration_columns.sql", "004_identity_lifecycle.sql", "005_ticket_idempotency.sql"]); // failed migration NOT recorded → retriable
+      expect(names).toEqual([BASE, "002_audit_enrichment.sql", "003_integration_columns.sql", "004_identity_lifecycle.sql", "005_ticket_idempotency.sql", "006_data_lifecycle.sql"]); // failed migration NOT recorded → retriable
     } finally {
       if (fs.existsSync(bad)) fs.rmSync(bad);
     }
@@ -84,6 +86,27 @@ describe("Versioned migrations (sqlite)", () => {
     const idx = (raw.prepare("PRAGMA index_list(support_tickets)").all() as any[]).find((r) => r.name === "idx_tickets_idempotency");
     expect(idx).toBeDefined();
     expect(idx!.unique).toBe(1);
+  });
+
+  it("006 adds soft-delete markers, retention policy seed, and health_checks", () => {
+    raw = fresh();
+    runSqliteMigrations(raw);
+    for (const tbl of ["customers", "orders", "support_tickets", "conversations", "messages"]) {
+      const cols = (raw.prepare(`PRAGMA table_info(${tbl})`).all() as any[]).map((r) => r.name);
+      expect(cols).toContain("deleted_at");
+    }
+    const custCols = (raw.prepare("PRAGMA table_info(customers)").all() as any[]).map((r) => r.name);
+    expect(custCols).toContain("notification_preferences");
+    const policies = raw.prepare("SELECT table_name, retention_days FROM data_retention_policy ORDER BY table_name").all() as any[];
+    expect(policies).toEqual([
+      { table_name: "audit_logs", retention_days: 1095 },
+      { table_name: "conversations", retention_days: 730 },
+      { table_name: "customers", retention_days: 365 },
+      { table_name: "messages", retention_days: 730 },
+      { table_name: "orders", retention_days: 730 },
+      { table_name: "support_tickets", retention_days: 730 },
+    ]);
+    expect(tablesOf(raw)).toContain("health_checks");
   });
 
   it("applies the legacy column guard to pre-versioning databases", () => {

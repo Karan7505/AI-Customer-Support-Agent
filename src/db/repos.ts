@@ -1,4 +1,5 @@
-import { and, asc, desc, eq, ilike, isNotNull, like, or } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, isNotNull, isNull, like, lt, or, sql } from "drizzle-orm";
+import { nowMs } from "../lib/util";
 import * as s from "./schema";
 import * as pg from "./schema.pg";
 import type {
@@ -6,6 +7,7 @@ import type {
   AuditLogRow,
   ConversationRow,
   CustomerRow,
+  DataRetentionPolicyRow,
   MessageRow,
   OrderRow,
   RefundRow,
@@ -53,6 +55,8 @@ function mapOrder(row: OrderRow): Order {
     refundableAmount: row.refundableAmount,
   };
 }
+
+export type SoftDeleteTable = "customers" | "orders" | "support_tickets" | "conversations" | "messages";
 
 export interface Repo {
   // customers
@@ -149,6 +153,13 @@ export interface Repo {
   addMessage: (m: { conversationId: string; role: string; content: string; meta?: unknown; createdAt: number }) => Promise<MessageRow>;
   listMessages: (conversationId: string) => Promise<MessageRow[]>;
 
+  // data lifecycle (blueprint §6.3/§6.6)
+  softDeleteExpired: (table: SoftDeleteTable, before: number) => Promise<number>;
+  hardDeleteAuditLogsOlderThan: (before: number) => Promise<number>;
+  softDeleteCustomerData: (customerId: string) => Promise<Record<string, number>>;
+  getDataRetentionPolicies: () => Promise<DataRetentionPolicyRow[]>;
+  touchDataRetentionPolicy: (tableName: string, retentionDays: number, at: number) => Promise<void>;
+
   // maintenance
   countAll: () => Promise<Record<string, number>>;
   reset: () => Promise<void>;
@@ -168,7 +179,7 @@ export interface Repo {
 
 export function createSqliteRepo(db: AppDatabase): Repo {
   return {
-    getCustomer: async (id) => await db.select().from(s.customers).where(eq(s.customers.id, id)).get(),
+    getCustomer: async (id) => await db.select().from(s.customers).where(and(eq(s.customers.id, id), isNull(s.customers.deletedAt))).get(),
     getCustomerByEmail: async (email) =>
       await db.select().from(s.customers).where(eq(s.customers.email, email.toLowerCase())).get(),
     createCustomer: async (c) => {
@@ -201,10 +212,10 @@ export function createSqliteRepo(db: AppDatabase): Repo {
     },
 
     getOrder: async (id) => {
-      const row = await db.select().from(s.orders).where(eq(s.orders.id, id)).get();
+      const row = await db.select().from(s.orders).where(and(eq(s.orders.id, id), isNull(s.orders.deletedAt))).get();
       return row ? mapOrder(row) : undefined;
     },
-    getOrderRow: async (id) => await db.select().from(s.orders).where(eq(s.orders.id, id)).get(),
+    getOrderRow: async (id) => await db.select().from(s.orders).where(and(eq(s.orders.id, id), isNull(s.orders.deletedAt))).get(),
     createOrder: async (o) => {
       await db.insert(s.orders).values({
         id: o.id, customerId: o.customerId, status: o.status, total: o.total, currency: o.currency,
@@ -214,10 +225,10 @@ export function createSqliteRepo(db: AppDatabase): Repo {
       }).run();
     },
     getOrdersByCustomer: async (customerId) =>
-      (await db.select().from(s.orders).where(eq(s.orders.customerId, customerId)).orderBy(asc(s.orders.createdAt)).all()).map(mapOrder),
+      (await db.select().from(s.orders).where(and(eq(s.orders.customerId, customerId), isNull(s.orders.deletedAt))).orderBy(asc(s.orders.createdAt)).all()).map(mapOrder),
     searchOrders: async (f) => {
       const limit = f.limit ?? 10;
-      const conds: any[] = [];
+      const conds: any[] = [isNull(s.orders.deletedAt)];
       if (f.customerId) conds.push(eq(s.orders.customerId, f.customerId));
       if (f.status) conds.push(eq(s.orders.status, f.status));
       const base = db.select().from(s.orders);
@@ -225,14 +236,14 @@ export function createSqliteRepo(db: AppDatabase): Repo {
       return (await filtered.orderBy(asc(s.orders.createdAt)).limit(limit).all()).map(mapOrder);
     },
     getLatestOrder: async (customerId) => {
-      const rows = await db.select().from(s.orders).where(eq(s.orders.customerId, customerId)).orderBy(asc(s.orders.createdAt)).all();
+      const rows = await db.select().from(s.orders).where(and(eq(s.orders.customerId, customerId), isNull(s.orders.deletedAt))).orderBy(asc(s.orders.createdAt)).all();
       return rows.length ? mapOrder(rows[rows.length - 1]) : undefined;
     },
     updateOrderRefundState: async (id, refundableAmount, status) => {
       await db.update(s.orders).set({ refundableAmount, status }).where(eq(s.orders.id, id)).run();
     },
 
-    getTicket: async (id) => await db.select().from(s.supportTickets).where(eq(s.supportTickets.id, id)).get(),
+    getTicket: async (id) => await db.select().from(s.supportTickets).where(and(eq(s.supportTickets.id, id), isNull(s.supportTickets.deletedAt))).get(),
     createTicket: async (t) => {
       const row = await db.insert(s.supportTickets).values({
         id: t.id, customerId: t.customerId, orderId: t.orderId, subject: t.subject, description: t.description,
@@ -249,10 +260,10 @@ export function createSqliteRepo(db: AppDatabase): Repo {
       await db.update(s.supportTickets).set(patch).where(eq(s.supportTickets.id, id)).run();
     },
     getTicketsByCustomer: async (customerId) =>
-      await db.select().from(s.supportTickets).where(eq(s.supportTickets.customerId, customerId)).all(),
+      await db.select().from(s.supportTickets).where(and(eq(s.supportTickets.customerId, customerId), isNull(s.supportTickets.deletedAt))).all(),
     listTickets: async (f) => {
       const limit = f.limit ?? 15;
-      const conds: any[] = [];
+      const conds: any[] = [isNull(s.supportTickets.deletedAt)];
       if (f.customerId) conds.push(eq(s.supportTickets.customerId, f.customerId));
       if (f.status) conds.push(eq(s.supportTickets.status, f.status));
       const base = db.select().from(s.supportTickets);
@@ -344,14 +355,14 @@ export function createSqliteRepo(db: AppDatabase): Repo {
     },
 
     getOrCreateConversation: async (customerId) => {
-      const existing = await db.select().from(s.conversations).where(eq(s.conversations.customerId, customerId)).orderBy(asc(s.conversations.createdAt)).limit(1).get();
+      const existing = await db.select().from(s.conversations).where(and(eq(s.conversations.customerId, customerId), isNull(s.conversations.deletedAt))).orderBy(asc(s.conversations.createdAt)).limit(1).get();
       if (existing) return existing;
       const id = `CONV-${customerId}`;
       await db.insert(s.conversations).values({ id, customerId, title: "Support conversation", createdAt: Date.now() }).run();
       return (await db.select().from(s.conversations).where(eq(s.conversations.id, id)).get())!;
     },
     listConversations: async (customerId) =>
-      await db.select().from(s.conversations).where(eq(s.conversations.customerId, customerId)).all(),
+      await db.select().from(s.conversations).where(and(eq(s.conversations.customerId, customerId), isNull(s.conversations.deletedAt))).all(),
     addMessage: async (m) => {
       const row = await db.insert(s.messages).values({
         conversationId: m.conversationId, role: m.role, content: m.content,
@@ -360,7 +371,44 @@ export function createSqliteRepo(db: AppDatabase): Repo {
       return row as MessageRow;
     },
     listMessages: async (conversationId) =>
-      await db.select().from(s.messages).where(eq(s.messages.conversationId, conversationId)).orderBy(asc(s.messages.id)).all(),
+      await db.select().from(s.messages).where(and(eq(s.messages.conversationId, conversationId), isNull(s.messages.deletedAt))).orderBy(asc(s.messages.id)).all(),
+
+    // data lifecycle (blueprint §6.3/§6.6)
+    softDeleteExpired: async (table, before) => {
+      const tbl: any =
+        table === "customers" ? s.customers :
+        table === "orders" ? s.orders :
+        table === "conversations" ? s.conversations :
+        table === "messages" ? s.messages :
+        s.supportTickets;
+      const r = await db.update(tbl).set({ deletedAt: nowMs() }).where(and(isNull(tbl.deletedAt), lt(tbl.createdAt, before))).run();
+      return r.changes;
+    },
+    hardDeleteAuditLogsOlderThan: async (before) => {
+      const r = await db.delete(s.auditLogs).where(lt(s.auditLogs.timestamp, before)).run();
+      return r.changes;
+    },
+    softDeleteCustomerData: async (customerId) => {
+      const t = nowMs();
+      const upd = (tbl: any, where: unknown) =>
+        db.update(tbl).set({ deletedAt: t }).where(and(isNull(tbl.deletedAt), where as any)).run();
+      const customers = (await upd(s.customers, eq(s.customers.id, customerId))).changes;
+      const orders = (await upd(s.orders, eq(s.orders.customerId, customerId))).changes;
+      const support_tickets = (await upd(s.supportTickets, eq(s.supportTickets.customerId, customerId))).changes;
+      const conversations = (await upd(s.conversations, eq(s.conversations.customerId, customerId))).changes;
+      const messages = (
+        await upd(s.messages, sql`conversation_id IN (SELECT id FROM conversations WHERE customer_id = ${customerId})`)
+      ).changes;
+      return { customers, orders, support_tickets, conversations, messages };
+    },
+    getDataRetentionPolicies: async () => (await db.select().from(s.dataRetentionPolicy).all()) as DataRetentionPolicyRow[],
+    touchDataRetentionPolicy: async (tableName, retentionDays, at) => {
+      await db
+        .insert(s.dataRetentionPolicy)
+        .values({ tableName, retentionDays, lastCleanup: at })
+        .onConflictDoUpdate({ target: s.dataRetentionPolicy.tableName, set: { retentionDays, lastCleanup: at } })
+        .run();
+    },
 
     countAll: async () => ({
       customers: (await db.select().from(s.customers).all()).length,
@@ -464,7 +512,7 @@ async function pgAll(q: any): Promise<any> {
 
 export function createPostgresRepo(db: PgDatabase): Repo {
   return {
-    getCustomer: async (id) => await pgOne(db.select().from(pg.customers).where(eq(pg.customers.id, id))),
+    getCustomer: async (id) => await pgOne(db.select().from(pg.customers).where(and(eq(pg.customers.id, id), isNull(pg.customers.deletedAt)))),
     getCustomerByEmail: async (email) =>
       await pgOne(db.select().from(pg.customers).where(eq(pg.customers.email, email.toLowerCase()))),
     createCustomer: async (c) => {
@@ -500,10 +548,10 @@ export function createPostgresRepo(db: PgDatabase): Repo {
     },
 
     getOrder: async (id) => {
-      const row = await pgOne(db.select().from(pg.orders).where(eq(pg.orders.id, id)));
+      const row = await pgOne(db.select().from(pg.orders).where(and(eq(pg.orders.id, id), isNull(pg.orders.deletedAt))));
       return row ? mapOrder(row) : undefined;
     },
-    getOrderRow: async (id) => await pgOne(db.select().from(pg.orders).where(eq(pg.orders.id, id))),
+    getOrderRow: async (id) => await pgOne(db.select().from(pg.orders).where(and(eq(pg.orders.id, id), isNull(pg.orders.deletedAt)))),
     createOrder: async (o) => {
       await db.insert(pg.orders).values({
         id: o.id, customerId: o.customerId, status: o.status, total: o.total, currency: o.currency,
@@ -513,10 +561,10 @@ export function createPostgresRepo(db: PgDatabase): Repo {
       });
     },
     getOrdersByCustomer: async (customerId) =>
-      (await pgAll(db.select().from(pg.orders).where(eq(pg.orders.customerId, customerId)).orderBy(asc(pg.orders.createdAt)))).map(mapOrder),
+      (await pgAll(db.select().from(pg.orders).where(and(eq(pg.orders.customerId, customerId), isNull(pg.orders.deletedAt))).orderBy(asc(pg.orders.createdAt)))).map(mapOrder),
     searchOrders: async (f) => {
       const limit = f.limit ?? 10;
-      const conds: any[] = [];
+      const conds: any[] = [isNull(pg.orders.deletedAt)];
       if (f.customerId) conds.push(eq(pg.orders.customerId, f.customerId));
       if (f.status) conds.push(eq(pg.orders.status, f.status));
       const base = db.select().from(pg.orders);
@@ -524,14 +572,14 @@ export function createPostgresRepo(db: PgDatabase): Repo {
       return (await pgAll(filtered.orderBy(asc(pg.orders.createdAt)).limit(limit))).map(mapOrder);
     },
     getLatestOrder: async (customerId) => {
-      const rows = await pgAll(db.select().from(pg.orders).where(eq(pg.orders.customerId, customerId)).orderBy(asc(pg.orders.createdAt)));
+      const rows = await pgAll(db.select().from(pg.orders).where(and(eq(pg.orders.customerId, customerId), isNull(pg.orders.deletedAt))).orderBy(asc(pg.orders.createdAt)));
       return rows.length ? mapOrder(rows[rows.length - 1]) : undefined;
     },
     updateOrderRefundState: async (id, refundableAmount, status) => {
       await db.update(pg.orders).set({ refundableAmount, status }).where(eq(pg.orders.id, id));
     },
 
-    getTicket: async (id) => await pgOne(db.select().from(pg.supportTickets).where(eq(pg.supportTickets.id, id))),
+    getTicket: async (id) => await pgOne(db.select().from(pg.supportTickets).where(and(eq(pg.supportTickets.id, id), isNull(pg.supportTickets.deletedAt)))),
     createTicket: async (t) => {
       await db.insert(pg.supportTickets).values({
         id: t.id, customerId: t.customerId, orderId: t.orderId, subject: t.subject, description: t.description,
@@ -548,10 +596,10 @@ export function createPostgresRepo(db: PgDatabase): Repo {
       await db.update(pg.supportTickets).set(patch).where(eq(pg.supportTickets.id, id));
     },
     getTicketsByCustomer: async (customerId) =>
-      await pgAll(db.select().from(pg.supportTickets).where(eq(pg.supportTickets.customerId, customerId))),
+      await pgAll(db.select().from(pg.supportTickets).where(and(eq(pg.supportTickets.customerId, customerId), isNull(pg.supportTickets.deletedAt)))),
     listTickets: async (f) => {
       const limit = f.limit ?? 15;
-      const conds: any[] = [];
+      const conds: any[] = [isNull(pg.supportTickets.deletedAt)];
       if (f.customerId) conds.push(eq(pg.supportTickets.customerId, f.customerId));
       if (f.status) conds.push(eq(pg.supportTickets.status, f.status));
       const base = db.select().from(pg.supportTickets);
@@ -646,13 +694,13 @@ export function createPostgresRepo(db: PgDatabase): Repo {
     },
 
     getOrCreateConversation: async (customerId) => {
-      const existing = await pgOne(db.select().from(pg.conversations).where(eq(pg.conversations.customerId, customerId)).orderBy(asc(pg.conversations.createdAt)).limit(1));
+      const existing = await pgOne(db.select().from(pg.conversations).where(and(eq(pg.conversations.customerId, customerId), isNull(pg.conversations.deletedAt))).orderBy(asc(pg.conversations.createdAt)).limit(1));
       if (existing) return existing;
       const id = `CONV-${customerId}`;
       await db.insert(pg.conversations).values({ id, customerId, title: "Support conversation", createdAt: Date.now() });
       return (await pgOne(db.select().from(pg.conversations).where(eq(pg.conversations.id, id))))!;
     },
-    listConversations: async (customerId) => await pgAll(db.select().from(pg.conversations).where(eq(pg.conversations.customerId, customerId))),
+    listConversations: async (customerId) => await pgAll(db.select().from(pg.conversations).where(and(eq(pg.conversations.customerId, customerId), isNull(pg.conversations.deletedAt)))),
     addMessage: async (m) => {
       await db.insert(pg.messages).values({
         conversationId: m.conversationId, role: m.role, content: m.content,
@@ -662,7 +710,43 @@ export function createPostgresRepo(db: PgDatabase): Repo {
       return (await pgAll(db.select().from(pg.messages).where(eq(pg.messages.conversationId, m.conversationId)).orderBy(desc(pg.messages.id)).limit(1)))[0];
     },
     listMessages: async (conversationId) =>
-      await pgAll(db.select().from(pg.messages).where(eq(pg.messages.conversationId, conversationId)).orderBy(asc(pg.messages.id))),
+      await pgAll(db.select().from(pg.messages).where(and(eq(pg.messages.conversationId, conversationId), isNull(pg.messages.deletedAt))).orderBy(asc(pg.messages.id))),
+
+    // data lifecycle (blueprint §6.3/§6.6)
+    softDeleteExpired: async (table, before) => {
+      const tbl: any =
+        table === "customers" ? pg.customers :
+        table === "orders" ? pg.orders :
+        table === "conversations" ? pg.conversations :
+        table === "messages" ? pg.messages :
+        pg.supportTickets;
+      const r: any = await db.update(tbl).set({ deletedAt: nowMs() }).where(and(isNull(tbl.deletedAt), lt(tbl.createdAt, before)));
+      return r?.rowCount ?? 0;
+    },
+    hardDeleteAuditLogsOlderThan: async (before) => {
+      const r: any = await db.delete(pg.auditLogs).where(lt(pg.auditLogs.timestamp, before));
+      return r?.rowCount ?? 0;
+    },
+    softDeleteCustomerData: async (customerId) => {
+      const t = nowMs();
+      const upd = async (tbl: any, where: unknown) => {
+        const r: any = await db.update(tbl).set({ deletedAt: t }).where(and(isNull(tbl.deletedAt), where as any));
+        return r?.rowCount ?? 0;
+      };
+      const customers = await upd(pg.customers, eq(pg.customers.id, customerId));
+      const orders = await upd(pg.orders, eq(pg.orders.customerId, customerId));
+      const support_tickets = await upd(pg.supportTickets, eq(pg.supportTickets.customerId, customerId));
+      const conversations = await upd(pg.conversations, eq(pg.conversations.customerId, customerId));
+      const messages = await upd(pg.messages, sql`conversationId IN (SELECT id FROM conversations WHERE customerId = ${customerId})`);
+      return { customers, orders, support_tickets, conversations, messages };
+    },
+    getDataRetentionPolicies: async () => pgAll(db.select().from(pg.dataRetentionPolicy)),
+    touchDataRetentionPolicy: async (tableName, retentionDays, at) => {
+      await db
+        .insert(pg.dataRetentionPolicy)
+        .values({ tableName, retentionDays, lastCleanup: at })
+        .onConflictDoUpdate({ target: pg.dataRetentionPolicy.tableName, set: { retentionDays, lastCleanup: at } });
+    },
 
     countAll: async () => ({
       customers: (await pgAll(db.select().from(pg.customers))).length,

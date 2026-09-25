@@ -5,6 +5,9 @@ import { jobMaxRetries, jobRetryBackoffMs, queueProvider } from "./env";
 import { createAuditor, type Auditor } from "./audit";
 import type { Principal } from "./types";
 import { getRepo, type Repo } from "@/db/repos";
+// Circular with ./retention by design: neither module touches the other's
+// bindings at top level, only inside function bodies.
+import { ensureLifecycleJobs } from "./retention";
 
 /**
  * Background job queue (blueprint §5.6).
@@ -31,6 +34,8 @@ export const JOB_TYPES = [
   "escalate_ticket",
   /** Monthly DB↔Stripe reconciliation (blueprint §8.5). */
   "check_stripe_consistency",
+  /** Weekly retention sweep — soft-delete past policy (blueprint §6.6). */
+  "retention_cleanup",
 ] as const;
 export type JobType = (typeof JOB_TYPES)[number];
 
@@ -219,6 +224,13 @@ export function getJobQueue(): JobQueue {
     }
     defaultQueue = createMemoryJobQueue();
     defaultQueue.start();
+    // Data lifecycle (blueprint §6.6): start the weekly retention sweep on
+    // first use of the default queue. Must never break the queue itself.
+    try {
+      ensureLifecycleJobs();
+    } catch (e) {
+      logger.warn("lifecycle job startup failed", { error: e instanceof Error ? e.message : String(e) });
+    }
   }
   return defaultQueue;
 }
