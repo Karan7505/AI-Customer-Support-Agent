@@ -20,6 +20,8 @@ export interface AgentTurnResult {
   cards: AgentCard[];
   structured?: Record<string, unknown>;
   events: AgentEvent[];
+  /** Total LLM cost of this turn in cents (feeds the daily spend guard). */
+  llmCostCents: number;
 }
 
 /**
@@ -221,7 +223,7 @@ export function createAgent(repo: Repo, llm: LlmClient) {
     chatRequestsTotal.inc({ result: finalized ? "success" : "max_iterations" });
     logger.info("agent turn complete", { role: principal.role, iterations, toolCalls: calledOnce.size, durationMs: turnMs, finalized });
 
-    return { assistantText: finalText, cards: finalCards, structured, events };
+    return { assistantText: finalText, cards: finalCards, structured, events, llmCostCents: turnCostCents };
   }
 
   return { runTurn };

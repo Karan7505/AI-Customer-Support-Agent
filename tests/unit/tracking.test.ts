@@ -73,6 +73,8 @@ describe("order tracking provider (blueprint §5.3)", () => {
 
   it("falls back to mock with a warning when the provider errors", async () => {
     vi.stubEnv("EASYPOST_API_KEY", "EP1");
+    // Isolate the cache semantics: no inline retries for this provider call.
+    vi.stubEnv("PROVIDER_MAX_RETRIES", "0");
     fetchSpy.mockResolvedValueOnce(new Response("boom", { status: 500 }));
     const env = makeEnv();
     const order = (await env.repo.getOrder("ORD-1"))!;

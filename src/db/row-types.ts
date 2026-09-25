@@ -56,6 +56,8 @@ export interface SupportTicketRow {
   status: string;
   /** JSON string of TicketNote[] (agent-only handling thread). */
   internalNotes: string | null;
+  /** Deterministic dedupe key (blueprint §8.2); null for pre-migration rows. */
+  idempotencyKey: string | null;
   createdAt: number;
   updatedAt: number;
 }

@@ -38,7 +38,7 @@ describe("Versioned migrations (sqlite)", () => {
 
   it("applies the base migration and records name/checksum/timestamp", () => {
     raw = fresh();
-    expect(runSqliteMigrations(raw)).toBe(4); // 001..004
+    expect(runSqliteMigrations(raw)).toBe(5); // 001..005
     expect(tablesOf(raw).sort()).toEqual([...EXPECTED_TABLES, "migrations"].sort());
     const row = raw.prepare("SELECT name, checksum, applied_at FROM migrations").get() as any;
     expect(row.name).toBe(BASE);
@@ -50,7 +50,7 @@ describe("Versioned migrations (sqlite)", () => {
     raw = fresh();
     runSqliteMigrations(raw);
     expect(runSqliteMigrations(raw)).toBe(0);
-    expect((raw.prepare("SELECT COUNT(*) c FROM migrations").get() as any).c).toBe(4);
+    expect((raw.prepare("SELECT COUNT(*) c FROM migrations").get() as any).c).toBe(5);
   });
 
   it("refuses to run when an applied migration was modified (checksum mismatch)", () => {
@@ -70,10 +70,20 @@ describe("Versioned migrations (sqlite)", () => {
     try {
       expect(() => runSqliteMigrations(db)).toThrow(); // the bad 999 migration fails the run
       const names = (db.prepare("SELECT name FROM migrations").all() as any[]).map((r) => r.name);
-      expect(names).toEqual([BASE, "002_audit_enrichment.sql", "003_integration_columns.sql", "004_identity_lifecycle.sql"]); // failed migration NOT recorded → retriable
+      expect(names).toEqual([BASE, "002_audit_enrichment.sql", "003_integration_columns.sql", "004_identity_lifecycle.sql", "005_ticket_idempotency.sql"]); // failed migration NOT recorded → retriable
     } finally {
       if (fs.existsSync(bad)) fs.rmSync(bad);
     }
+  });
+
+  it("005 adds the ticket idempotency key with a unique index", () => {
+    raw = fresh();
+    runSqliteMigrations(raw);
+    const cols = (raw.prepare("PRAGMA table_info(support_tickets)").all() as any[]).map((r) => r.name);
+    expect(cols).toContain("idempotency_key");
+    const idx = (raw.prepare("PRAGMA index_list(support_tickets)").all() as any[]).find((r) => r.name === "idx_tickets_idempotency");
+    expect(idx).toBeDefined();
+    expect(idx!.unique).toBe(1);
   });
 
   it("applies the legacy column guard to pre-versioning databases", () => {

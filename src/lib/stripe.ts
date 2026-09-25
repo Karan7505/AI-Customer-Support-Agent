@@ -1,5 +1,6 @@
 import { logger } from "./logger";
-import { stripeApiBase, stripeSecretKey } from "./env";
+import { providerTimeoutMs, stripeApiBase, stripeSecretKey } from "./env";
+import { withRetry, ProviderHttpError } from "./retry";
 import type { JobQueue } from "./queue";
 import type { Repo } from "@/db/repos";
 import type { Auditor } from "./audit";
@@ -26,6 +27,12 @@ export function isMockPaymentIntent(pi: string | null | undefined): boolean {
   return !!pi && pi.startsWith("pi_mock_");
 }
 
+/**
+ * POST /refunds with the shared retry policy (blueprint §8.3): 10s timeout,
+ * 3 retries, 1s/2s/4s backoff, transient failures only. Retries are safe
+ * because the same Idempotency-Key is sent on every attempt — Stripe returns
+ * the same refund for the same key.
+ */
 export async function createStripeRefund(opts: {
   paymentIntentId: string;
   amountCents: number;
@@ -39,21 +46,50 @@ export async function createStripeRefund(opts: {
     amount: String(opts.amountCents),
     currency: opts.currency.toLowerCase(),
   });
-  const res = await fetch(`${stripeApiBase()}/refunds`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${key}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-      "Idempotency-Key": opts.idempotencyKey,
-    },
-    body,
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`stripe refund failed: HTTP ${res.status} ${text.slice(0, 300)}`);
-  }
-  const data = (await res.json()) as { id?: string; status?: string };
+  const data = await withRetry(async () => {
+    const res = await fetch(`${stripeApiBase()}/refunds`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Idempotency-Key": opts.idempotencyKey,
+      },
+      body,
+      signal: AbortSignal.timeout(providerTimeoutMs()),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new ProviderHttpError(res.status, `stripe refund failed: HTTP ${res.status} ${text.slice(0, 300)}`);
+    }
+    return (await res.json()) as { id?: string; status?: string };
+  }, { label: "stripe refund" });
   if (!data.id) throw new Error("stripe refund response missing id");
+  return { id: data.id, status: data.status ?? "succeeded" };
+}
+
+/**
+ * GET /refunds/{id} for the monthly consistency check (blueprint §8.5).
+ * Returns null when the refund does not exist in Stripe (404) or when no
+ * key is configured (caller treats that as "cannot verify").
+ */
+export async function getStripeRefund(refundId: string): Promise<StripeRefundResult | null> {
+  const key = stripeSecretKey();
+  if (!key) return null;
+  const data = await withRetry(async () => {
+    const res = await fetch(`${stripeApiBase()}/refunds/${encodeURIComponent(refundId)}`, {
+      headers: {
+        Authorization: `Bearer ${key}`,
+        Accept: "application/json",
+      },
+      signal: AbortSignal.timeout(providerTimeoutMs()),
+    });
+    if (res.status === 404) return null;
+    if (!res.ok) {
+      throw new ProviderHttpError(res.status, `stripe refund lookup failed: HTTP ${res.status}`);
+    }
+    return (await res.json()) as { id?: string; status?: string };
+  }, { label: "stripe refund lookup" });
+  if (!data || !data.id) return null;
   return { id: data.id, status: data.status ?? "succeeded" };
 }
 

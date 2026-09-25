@@ -104,7 +104,8 @@ async function seed(repo: Repo) {
   await repo.createTicket({
     id: "TCK-1001", customerId: "CUST-1001", orderId: "ORD-1003", subject: "Return label needed",
     description: "I would like a prepaid return label for my wireless mouse order.",
-    priority: "medium", status: "open", internalNotes: null, createdAt: t - 13 * day, updatedAt: t - 13 * day,
+    priority: "medium", status: "open", internalNotes: null, idempotencyKey: null,
+    createdAt: t - 13 * day, updatedAt: t - 13 * day,
   });
 
   const counts = await repo.countAll();

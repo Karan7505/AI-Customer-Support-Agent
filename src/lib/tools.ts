@@ -1,7 +1,11 @@
+import { createHash } from "node:crypto";
 import type { Repo } from "@/db/repos";
 import { genId } from "./ids";
 import { Errors } from "./errors";
 import { nowMs, formatCents, parseJson } from "./util";
+import { logger } from "./logger";
+import { allowRequest } from "./rate-limit";
+import { rateLimitRefundPerDay } from "./env";
 import type {
   AgentCard,
   Order,
@@ -130,6 +134,34 @@ function mapTicket(row: any): SupportTicket {
   };
 }
 
+/**
+ * Deterministic idempotency key for ticket creation (blueprint §8.2): the same
+ * customer + request (order, subject, priority, description — normalized)
+ * always maps to the same key, so a retried/duplicated request returns the
+ * existing ticket instead of creating a second one.
+ */
+export function ticketIdempotencyKey(params: {
+  customerId: string;
+  orderId: string | null;
+  subject: string;
+  description: string;
+  priority: string;
+}): string {
+  const h = createHash("sha256")
+    .update(
+      [
+        params.customerId,
+        params.orderId ?? "",
+        params.subject.toLowerCase().trim(),
+        params.priority,
+        params.description.toLowerCase().trim(),
+      ].join("|"),
+    )
+    .digest("hex")
+    .slice(0, 32);
+  return `ticket:${h}`;
+}
+
 /** Resolve the customer a support ticket is for (staff may target any customer). */
 async function resolveTicketCustomer(ctx: ToolContext, order: Order | null, requested?: string): Promise<string> {
   if (isStaff(ctx.principal.role)) {
@@ -230,6 +262,32 @@ const create_support_ticket: ToolSpec = {
       orderId = order.id;
     }
     const customerId = await resolveTicketCustomer(ctx, order, args.customerId as string | undefined);
+
+    // Idempotency (blueprint §8.2): same request -> same ticket.
+    const idemKey = ticketIdempotencyKey({
+      customerId,
+      orderId,
+      subject: args.subject,
+      description: args.description,
+      priority: args.priority,
+    });
+    const existing = await ctx.repo.getTicketByIdempotencyKey(idemKey);
+    if (existing) {
+      const ticket = mapTicket(existing);
+      await ctx.auditor.log(
+        { actor: ctx.principal, conversationId: ctx.conversationId },
+        "ticket.created_duplicate",
+        {
+          toolName: "create_support_ticket",
+          arguments: args,
+          result: { ticketId: ticket.id },
+          status: "success",
+          metadata: { idempotent: true },
+        },
+      );
+      return { ok: true, data: { ticket, idempotent: true } };
+    }
+
     const id = genId("TCK");
     const t = nowMs();
     const row = await ctx.repo.createTicket({
@@ -241,6 +299,7 @@ const create_support_ticket: ToolSpec = {
       priority: args.priority,
       status: "open",
       internalNotes: null,
+      idempotencyKey: idemKey,
       createdAt: t,
       updatedAt: t,
     });
@@ -335,6 +394,26 @@ const request_refund: ToolSpec = {
       return {
         ok: false,
         error: { code: "ELIGIBILITY", message: eligibility.reason ?? "Not eligible", details: eligibility.details },
+      };
+    }
+
+    // Fraud cap (blueprint §7.6): at most N NEW refund requests per customer
+    // per day. Duplicates and ineligible attempts do not consume the cap.
+    if (!allowRequest(`refund:${order.customerId}`, rateLimitRefundPerDay(), 24 * 60 * 60 * 1000)) {
+      logger.warn("rate limit hit", { scope: "refund", key: `refund:${order.customerId}`, orderId: order.id });
+      await ctx.auditor.log(
+        { actor: ctx.principal, conversationId: ctx.conversationId },
+        "refund.rate_limited",
+        {
+          toolName: "request_refund",
+          arguments: { orderId: order.id, amount: normalizedAmount, reason: args.reason },
+          result: { status: "rate_limited" },
+          status: "failure",
+        },
+      );
+      return {
+        ok: false,
+        error: { code: "RATE_LIMITED", message: "Refund request limit reached for today. Please try again tomorrow." },
       };
     }
 

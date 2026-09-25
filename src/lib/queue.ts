@@ -25,7 +25,13 @@ import { getRepo, type Repo } from "@/db/repos";
  * under the `system` principal.
  */
 
-export const JOB_TYPES = ["send_email_notification", "execute_refund_fallback", "escalate_ticket"] as const;
+export const JOB_TYPES = [
+  "send_email_notification",
+  "execute_refund_fallback",
+  "escalate_ticket",
+  /** Monthly DB↔Stripe reconciliation (blueprint §8.5). */
+  "check_stripe_consistency",
+] as const;
 export type JobType = (typeof JOB_TYPES)[number];
 
 export interface Job {

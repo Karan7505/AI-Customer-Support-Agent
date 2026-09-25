@@ -431,8 +431,10 @@ switches that one concern to live; everything else is untouched.
 (`gpt-4o-mini` default, `OPENAI_MODEL` overrides). Hardened with a
 `LLM_TIMEOUT_MS` per-call timeout (30s), 3 retries with 1s→2s→4s backoff for
 transient failures only (408/429/5xx, network, timeout — never auth errors),
-per-call token/cost logging, and a per-turn cost guardrail
-(`LLM_MAX_COST_CENTS`, default 100 = $1.00). If the provider ultimately
+per-call token/cost logging, a per-turn cost guardrail
+(`LLM_MAX_COST_CENTS`, default 100 = $1.00), and a per-customer **daily**
+spend guard (`LLM_DAILY_COST_CENTS`, default 5000 = $50.00, 429 above the
+cap). If the provider ultimately
 fails, the factory transparently falls back to the mock planner with a
 warning (real key configured). Live test: `OPENAI_API_KEY=... npm run
 test:live -- openai` (skipped in normal runs/CI without a key).
@@ -467,14 +469,65 @@ From address: `NOTIFICATIONS_FROM`.
 
 **Background job queue (§5.6).** In-process memory queue (default,
 `QUEUE_PROVIDER=memory`) processes `send_email_notification`,
-`execute_refund_fallback` and `escalate_ticket` jobs with retries
-(`JOB_MAX_RETRIES`=3, exponential backoff from `JOB_RETRY_BACKOFF_MS`=1s →
-1s/2s/4s), dedupe keys, and audit entries (`job.completed` / `job.retried` /
-`job.failed`) under the `system` principal. **Redis is a documented
-extension point** (blueprint calls it "optional later"): `QUEUE_PROVIDER=redis`
-fails fast with instructions; implement a BullMQ-backed `JobQueue` (interface
-in `src/lib/queue.ts`) to enable it. Refund state survives queue loss: a
-`pending_execution` refund is retried the next time its approval is executed.
+`execute_refund_fallback`, `escalate_ticket` and `check_stripe_consistency`
+jobs with retries (`JOB_MAX_RETRIES`=3, exponential backoff from
+`JOB_RETRY_BACKOFF_MS`=1s → 1s/2s/4s), dedupe keys, and audit entries
+(`job.completed` / `job.retried` / `job.failed`) under the `system` principal.
+**Redis is a documented extension point** (blueprint calls it "optional
+later"): `QUEUE_PROVIDER=redis` fails fast with instructions; implement a
+BullMQ-backed `JobQueue` (interface in `src/lib/queue.ts`) to enable it.
+Refund state survives queue loss: a `pending_execution` refund is retried the
+next time its approval is executed.
+
+## Reliability & failure recovery (§7.6 / §8)
+
+**Provider failure matrix** (every path degrades without dropping customer
+state; the DB is always committed *before* any provider call):
+
+| Provider | On failure | Recovery |
+| --- | --- | --- |
+| LLM | retry transient 3× (1s→2s→4s), then fall back to the mock planner with a warning (real key configured) | next turn retries live |
+| Stripe | retry transient 3× (10s timeout), then mark refund `pending_execution` | background job retries the same idempotency key; re-executing the approval self-heals |
+| EasyPost | retry transient 3×, then deterministic mock tracking + warning | 1h cache; next lookup retries live |
+| Resend | queue retries 3× then `job.failed` audit | non-blocking; chat/ticket state unaffected |
+| Postgres | fail closed (health `ready`=false; no half-applied writes) | restart/probe; boot refuses on migration failure |
+
+Auth errors (401/403) and other 4xx are **never retried** — they log and fail
+fast (§8.1). All retries share `src/lib/retry.ts` (`withRetry`, tunable via
+`PROVIDER_MAX_RETRIES` / `PROVIDER_RETRY_BACKOFF_MS` / `PROVIDER_TIMEOUT_MS`).
+
+**Rate limits (§7.6)** — in-process fixed windows, 429 + structured
+`rate limit hit` log on every rejection, all env-tunable:
+
+| Limit | Default | Key |
+| --- | --- | --- |
+| Chat messages per customer per hour | `RATE_LIMIT_MSG_PER_HOUR`=20 | `msg:<customerId>` |
+| New refund requests per customer per day | `RATE_LIMIT_REFUND_PER_DAY`=5 | `refund:<customerId>` |
+| API calls per IP per minute (all `/api`) | `RATE_LIMIT_API_PER_MIN`=100 | `api:<ip>` |
+| Cumulative LLM spend per customer per day | `LLM_DAILY_COST_CENTS`=5000 ($50) | per-customer ledger |
+
+`CHAT_TURNS_PER_WINDOW`/`CHAT_WINDOW_MS` remain as a short-window spike cap on
+top of the hourly message cap; login keeps its fixed 8/10-min cap.
+`RATE_LIMIT_PROVIDER` (`memory`|`redis`) is the documented shared-store
+extension point.
+
+**Idempotency (§8.2).** Refund approvals are idempotent per approval request
+(idempotency key on every Stripe call). Ticket creation is idempotent per
+customer request: a deterministic key (customer + order + normalized
+subject/description/priority, migration 005) makes a retried/duplicated
+request return the existing ticket. Email delivery is idempotent per email id
+(the dedupe key): a re-enqueued identical notification is skipped, never
+double-sent.
+
+**Consistency check & recovery (§8.5).** `check_stripe_consistency` runs at
+most once per calendar month: every `completed` refund carrying a
+`provider_refund_id` is looked up in Stripe. Missing → refund marked
+`orphaned` + `refund.orphaned` audit (ops alert); Stripe reports `failed` →
+`refund.consistency_mismatch` audit, DB left untouched for manual review.
+**Recovery procedure:** the DB is the source of truth — investigate the
+payment intent in Stripe first (the refund may exist under a different id);
+never re-issue a refund from the app for an `orphaned` row without an ops
+sign-off; reconcile balances from the DB, not from Stripe.
 
 ## Observability & audit
 
@@ -591,7 +644,15 @@ the app runs with **no** variables set.
 | `SESSION_SECRET` | **yes (production)** | dev value | HMAC for session tokens. Production boot **fails** if unset. |
 | `APP_URL` | no | `http://localhost:3000` | Public base URL. |
 | `APPROVAL_TTL_HOURS` | no | `72` | How long a pending approval stays actionable. |
-| `CHAT_TURNS_PER_WINDOW` | no | `60` | Per-customer chat turn cap (rate limit). |
+| `RATE_LIMIT_MSG_PER_HOUR` | no | `20` | Chat messages per customer per hour → 429. |
+| `RATE_LIMIT_REFUND_PER_DAY` | no | `5` | New refund requests per customer per day → 429. |
+| `RATE_LIMIT_API_PER_MIN` | no | `100` | API calls per IP per minute (all `/api`) → 429. |
+| `RATE_LIMIT_PROVIDER` | no | `memory` | `memory` (in-process) or `redis` (documented extension point). |
+| `LLM_DAILY_COST_CENTS` | no | `5000` | Cumulative LLM spend per customer per day ($50) → 429. |
+| `PROVIDER_TIMEOUT_MS` | no | `10000` | Timeout per provider HTTP call (Stripe, EasyPost). |
+| `PROVIDER_MAX_RETRIES` | no | `3` | Retries on transient provider failures (408/429/5xx/network). |
+| `PROVIDER_RETRY_BACKOFF_MS` | no | `1000` | Exponential backoff base (1s → 2s → 4s). |
+| `CHAT_TURNS_PER_WINDOW` | no | `60` | Per-customer chat turn cap (short-window spike cap). |
 | `CHAT_WINDOW_MS` | no | `600000` | Chat rate-limit window in ms. |
 | `LOG_LEVEL` | no | `info` | Log level: error \| warn \| info \| debug. |
 | `LOG_FORMAT` | no | json/pretty | `json` (one-line, log-shippers) or `pretty` (dev). |
@@ -637,8 +698,12 @@ The app is configured to **fail closed** in production:
 - **Login brute-force throttle** — 8 attempts per 10 minutes per IP and per
   account → HTTP 429. Failures are logged server-side (email + IP only, never
   the password).
-- **Chat / LLM cost cap** — per-customer turn limit (default 60 turns per 10
-  minutes; `CHAT_TURNS_PER_WINDOW` / `CHAT_WINDOW_MS`) → HTTP 429.
+- **Chat / LLM cost cap** — per-customer message cap (20/hour,
+  `RATE_LIMIT_MSG_PER_HOUR`), short-window turn spike cap (60 turns per 10
+  minutes, `CHAT_TURNS_PER_WINDOW` / `CHAT_WINDOW_MS`), refund request cap
+  (5/day per customer), per-IP API cap (100/min), and a per-customer daily LLM
+  spend guard ($50) → HTTP 429. See
+  [Reliability & failure recovery](#reliability--failure-recovery-76--8).
 - **Security headers** — `X-Content-Type-Options: nosniff`, `X-Frame-Options:
   DENY`, `Referrer-Policy`, and HSTS (with preload) on every response; a strict
   `Content-Security-Policy` (no `unsafe-eval`, no remote scripts, no plugins,

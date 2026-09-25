@@ -2,7 +2,8 @@ import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { AppError } from "@/lib/errors";
 import { getPrincipal, SESSION_COOKIE } from "@/lib/auth";
-import { logRuntimeMode } from "@/lib/env";
+import { logRuntimeMode, rateLimitApiPerMin } from "@/lib/env";
+import { allowRequest } from "@/lib/rate-limit";
 import { newCorrelationId, runWithCorrelation, logger } from "@/lib/logger";
 import { recordHttpRequest, ensureMetricsServer } from "@/lib/metrics";
 import { nowMs } from "@/lib/util";
@@ -34,6 +35,23 @@ export async function apiRequest(
   const header = (req.headers.get("x-request-id") ?? "").trim().slice(0, 64);
   const corr = /^[A-Za-z0-9_-]+$/.test(header) ? header : newCorrelationId();
   const t0 = nowMs();
+  // Per-IP API cap (blueprint §7.6): N calls/min/IP across all /api routes.
+  // Checked before any business logic so a limited client never touches the DB.
+  const ip = clientIp(req);
+  if (!allowRequest(`api:${ip}`, rateLimitApiPerMin(), 60_000)) {
+    logger.warn("rate limit hit", { scope: "api", ip, method, path });
+    const limited = json(
+      { error: { code: "RATE_LIMITED", message: "Too many requests. Please slow down." } },
+      { status: 429 },
+    );
+    recordHttpRequest(method, path, 429, 0);
+    try {
+      limited.headers.set("x-request-id", corr);
+    } catch {
+      /* locked headers */
+    }
+    return limited;
+  }
   let res: Response;
   try {
     res = await runWithCorrelation(corr, async () => {
@@ -66,6 +84,7 @@ export function httpError(e: unknown): NextResponse {
       e.code === "NOT_FOUND" || e.code === "APPROVAL_NOT_FOUND" ? 404 :
       e.code === "VALIDATION_ERROR" || e.code === "TOKEN_INVALID" ? 400 :
       e.code === "DUPLICATE" ? 409 :
+      e.code === "RATE_LIMITED" ? 429 :
       500;
     return NextResponse.json(
       { error: { code: e.code, message: e.message, details: e.details } },

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, ilike, like, or } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, isNotNull, like, or } from "drizzle-orm";
 import * as s from "./schema";
 import * as pg from "./schema.pg";
 import type {
@@ -88,9 +88,14 @@ export interface Repo {
 
   // tickets
   getTicket: (id: string) => Promise<SupportTicketRow | undefined>;
+  /** Blueprint §8.2: idempotent ticket creation (same key -> same ticket). */
+  getTicketByIdempotencyKey: (key: string) => Promise<SupportTicketRow | undefined>;
+  /** Blueprint §8.5: settled refunds carrying a provider id (consistency check). */
+  getSettledRefundsForConsistency: () => Promise<RefundRow[]>;
   createTicket: (t: {
     id: string; customerId: string; orderId: string | null; subject: string;
     description: string; priority: string; status: string; internalNotes: string | null;
+    idempotencyKey: string | null;
     createdAt: number; updatedAt: number;
   }) => Promise<SupportTicketRow>;
   updateTicket: (id: string, patch: Partial<Pick<SupportTicketRow, "status" | "priority" | "internalNotes" | "updatedAt">>) => Promise<void>;
@@ -231,11 +236,15 @@ export function createSqliteRepo(db: AppDatabase): Repo {
     createTicket: async (t) => {
       const row = await db.insert(s.supportTickets).values({
         id: t.id, customerId: t.customerId, orderId: t.orderId, subject: t.subject, description: t.description,
-        priority: t.priority, status: t.status, internalNotes: t.internalNotes,
+        priority: t.priority, status: t.status, internalNotes: t.internalNotes, idempotencyKey: t.idempotencyKey,
         createdAt: t.createdAt, updatedAt: t.updatedAt,
       }).returning().get();
       return row as SupportTicketRow;
     },
+    getTicketByIdempotencyKey: async (key) =>
+      await db.select().from(s.supportTickets).where(eq(s.supportTickets.idempotencyKey, key)).get(),
+    getSettledRefundsForConsistency: async () =>
+      await db.select().from(s.refunds).where(and(eq(s.refunds.status, "completed"), isNotNull(s.refunds.providerRefundId))).all(),
     updateTicket: async (id, patch) => {
       await db.update(s.supportTickets).set(patch).where(eq(s.supportTickets.id, id)).run();
     },
@@ -526,11 +535,15 @@ export function createPostgresRepo(db: PgDatabase): Repo {
     createTicket: async (t) => {
       await db.insert(pg.supportTickets).values({
         id: t.id, customerId: t.customerId, orderId: t.orderId, subject: t.subject, description: t.description,
-        priority: t.priority, status: t.status, internalNotes: t.internalNotes,
+        priority: t.priority, status: t.status, internalNotes: t.internalNotes, idempotencyKey: t.idempotencyKey,
         createdAt: t.createdAt, updatedAt: t.updatedAt,
       });
       return (await pgOne(db.select().from(pg.supportTickets).where(eq(pg.supportTickets.id, t.id))))!;
     },
+    getTicketByIdempotencyKey: async (key) =>
+      await pgOne(db.select().from(pg.supportTickets).where(eq(pg.supportTickets.idempotencyKey, key))),
+    getSettledRefundsForConsistency: async () =>
+      await pgAll(db.select().from(pg.refunds).where(and(eq(pg.refunds.status, "completed"), isNotNull(pg.refunds.providerRefundId)))),
     updateTicket: async (id, patch) => {
       await db.update(pg.supportTickets).set(patch).where(eq(pg.supportTickets.id, id));
     },

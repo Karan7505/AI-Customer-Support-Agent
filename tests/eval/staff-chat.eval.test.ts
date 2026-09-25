@@ -51,7 +51,8 @@ describe("Staff (admin/support) chat", () => {
     await env.repo.createTicket({
       id: "TCK-1", customerId: "CUST-1", orderId: null,
       subject: "Fixture ticket", description: "A pre-existing open ticket.",
-      priority: "low", status: "open", internalNotes: null, createdAt: env.now, updatedAt: env.now,
+      priority: "low", status: "open", internalNotes: null, idempotencyKey: null,
+      createdAt: env.now, updatedAt: env.now,
     });
     const res = await agentFor(env).runTurn({ principal: admin(), userText: "List the open tickets" });
     expect(res.assistantText).toMatch(/TCK-1/);

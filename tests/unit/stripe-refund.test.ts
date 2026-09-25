@@ -34,6 +34,8 @@ describe("Stripe refund integration (blueprint §5.4)", () => {
     fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);
     vi.unstubAllEnvs();
+    // Keep the provider retry loop (1s/2s/4s default) instant in tests.
+    vi.stubEnv("PROVIDER_RETRY_BACKOFF_MS", "1");
   });
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -131,7 +133,8 @@ describe("Stripe refund integration (blueprint §5.4)", () => {
     // Still exactly one refund row; balance decremented only once.
     expect((await env.repo.getRefundsByOrder("ORD-1")).length).toBe(1);
     expect((await env.repo.getOrder("ORD-1"))!.refundableAmount).toBe(7000);
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    // 2 attempts on the first execution (500 then exhausted) + 1 on the retry.
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
   });
 
   it("background job settles a pending_execution refund (same idempotency key)", async () => {

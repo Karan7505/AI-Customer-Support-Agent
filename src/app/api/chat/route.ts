@@ -4,8 +4,9 @@ import { deps, json, httpError, currentPrincipal, apiRequest } from "../_util";
 import { createAgent } from "@/lib/agent";
 import { createLlmClient } from "@/lib/llm-factory";
 import { Errors } from "@/lib/errors";
-import { allowRequest } from "@/lib/rate-limit";
-import { envInt } from "@/lib/env";
+import { allowRequest, llmDailyCostExceeded, recordLlmDailyCost } from "@/lib/rate-limit";
+import { envInt, rateLimitMsgPerHour } from "@/lib/env";
+import { logger } from "@/lib/logger";
 
 export const runtime = "nodejs";
 
@@ -16,6 +17,26 @@ export async function POST(req: Request) {
     try {
       const principal = await currentPrincipal();
       if (!principal) throw Errors.unauthorized("Sign in required.");
+
+      // Hourly per-customer message cap (blueprint §7.6, default 20/hour).
+      // Checked first (strictest sustained rate) so a rejected turn does not
+      // consume the short-window spike cap below.
+      if (!allowRequest(`msg:${principal.id}`, rateLimitMsgPerHour(), 60 * 60 * 1000)) {
+        logger.warn("rate limit hit", { scope: "msg", customerId: principal.id });
+        return NextResponse.json(
+          { error: { code: "RATE_LIMITED", message: "You've reached the message limit for this hour. Please try again soon." } },
+          { status: 429 },
+        );
+      }
+
+      // Daily LLM spend cap (blueprint §7.6, default $50/customer/day).
+      if (llmDailyCostExceeded(principal.id)) {
+        logger.warn("rate limit hit", { scope: "llm_daily_cost", customerId: principal.id });
+        return NextResponse.json(
+          { error: { code: "DAILY_COST_LIMIT", message: "The daily AI budget for this account was reached. Please try again tomorrow." } },
+          { status: 429 },
+        );
+      }
 
       // Spend/abuse cap: each turn can trigger up to AGENT_MAX_ITERATIONS paid
       // LLM calls, so throttle turns per account (default 60 / 10 min).
@@ -36,6 +57,8 @@ export async function POST(req: Request) {
         principal,
         userText: body.message,
       });
+      // Feed the daily LLM spend guard (blueprint §7.6).
+      recordLlmDailyCost(principal.id, result.llmCostCents);
 
       return json({
         ok: true,

@@ -18,6 +18,7 @@ export type ErrorCode =
   | "ACCOUNT_DEACTIVATED"
   | "EMAIL_NOT_VERIFIED"
   | "TOKEN_INVALID"
+  | "RATE_LIMITED"
   | "INTERNAL"
   | "TOOL_ERROR";
 
@@ -61,6 +62,8 @@ export const Errors = {
     new AppError("EMAIL_NOT_VERIFIED", msg),
   tokenInvalid: (msg = "This link is invalid or has expired.") =>
     new AppError("TOKEN_INVALID", msg),
+  rateLimited: (msg = "Too many requests. Please slow down.") =>
+    new AppError("RATE_LIMITED", msg),
   internal: (msg = "Internal error.") => new AppError("INTERNAL", msg),
   tool: (msg: string, details?: unknown) => new AppError("TOOL_ERROR", msg, details),
 };

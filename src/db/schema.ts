@@ -53,6 +53,8 @@ export const REFUND_STATUS = [
   "completed",
   /** DB refund applied, but the payment-provider refund is still in flight (job queue retries). */
   "pending_execution",
+  /** Completed in DB but missing in Stripe (monthly consistency check, §8.5). */
+  "orphaned",
   "failed",
 ] as const;
 export type RefundStatus = (typeof REFUND_STATUS)[number];
@@ -127,6 +129,8 @@ export const supportTickets = sqliteTable(
     status: text("status").notNull().default("open"),
     /** JSON array of {author, authorRole, content, at} — agent handling thread. */
     internalNotes: text("internal_notes"),
+    /** Deterministic dedupe key; same customer request returns the same ticket (§8.2). */
+    idempotencyKey: text("idempotency_key"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },

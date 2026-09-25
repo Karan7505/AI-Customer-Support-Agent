@@ -8,12 +8,16 @@ import { logger } from "./logger";
 import { refundRequestsTotal } from "./metrics";
 import { stripeSecretKey } from "./env";
 import { createStripeRefund, isMockPaymentIntent, registerStripeJobHandlers } from "./stripe";
+import { registerStripeConsistencyJob, startStripeConsistencyScheduler } from "./stripe-consistency";
 import { getJobQueue } from "./queue";
 
 let stripeHandlersRegistered = false;
 function ensureStripeHandlers(): void {
   if (stripeHandlersRegistered) return;
-  registerStripeJobHandlers(getJobQueue());
+  const queue = getJobQueue();
+  registerStripeJobHandlers(queue);
+  registerStripeConsistencyJob(queue);
+  startStripeConsistencyScheduler(queue);
   stripeHandlersRegistered = true;
 }
 

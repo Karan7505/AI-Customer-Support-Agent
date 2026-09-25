@@ -51,9 +51,25 @@ function dedupeKeyFor(event: NotifyEvent, payload: Record<string, unknown>): str
 
 let handlerRegistered = false;
 
+/**
+ * Idempotency for email delivery (blueprint §8.2): the deterministic email id
+ * (the dedupe key) is remembered after a successful send, so a re-enqueued
+ * job for the SAME email can never send it twice — the queue's dedupe only
+ * covers jobs that are still queued/running. In-process by design (MVP);
+ * bounded to the most recent sends.
+ */
+const sentEmails = new Set<string>();
+const SENT_EMAILS_CAP = 10_000;
+
 const handleEmailJob: JobHandler = async (job, ctx) => {
   const { event, payload } = job.payload as unknown as EmailJobPayload;
   if (!event || !payload) throw new Error("malformed email job payload");
+
+  const emailId = dedupeKeyFor(event, payload);
+  if (sentEmails.has(emailId)) {
+    logger.info("email job skipped (already sent; idempotent)", { emailId, event });
+    return;
+  }
 
   const recipients: string[] = [];
   let customerName: string | undefined;
@@ -92,6 +108,10 @@ const handleEmailJob: JobHandler = async (job, ctx) => {
     const text = await res.text().catch(() => "");
     throw new Error(`resend failed: HTTP ${res.status} ${text.slice(0, 200)}`);
   }
+  sentEmails.add(emailId);
+  if (sentEmails.size > SENT_EMAILS_CAP) {
+    for (const k of [...sentEmails].slice(0, SENT_EMAILS_CAP / 2)) sentEmails.delete(k);
+  }
   logger.info("notification email sent", { event, recipients: recipients.length, subject });
 };
 
@@ -128,4 +148,9 @@ export function notifyEvent(event: NotifyEvent, payload: Record<string, unknown>
 /** Test hook: allow tests to reset the registration flag when swapping queues. */
 export function resetNotifyHandlerForTesting(): void {
   handlerRegistered = false;
+}
+
+/** Test hook: drop the sent-email idempotency set. */
+export function resetSentEmailsForTesting(): void {
+  sentEmails.clear();
 }

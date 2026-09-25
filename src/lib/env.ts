@@ -350,6 +350,53 @@ export function jobRetryBackoffMs(): number {
 }
 
 /* -------------------------------------------------------------------------- */
+/*  Reliability (blueprint §7.6 / §8)                                          */
+/* -------------------------------------------------------------------------- */
+
+/** Per-request timeout for provider HTTP calls (default 10s). */
+export function providerTimeoutMs(): number {
+  const n = parseInt(process.env.PROVIDER_TIMEOUT_MS ?? "10000", 10);
+  return Number.isFinite(n) && n > 0 ? n : 10000;
+}
+
+/** Transient-failure retries for provider calls (default 3, i.e. 4 attempts). */
+export function providerMaxRetries(): number {
+  const n = envInt("PROVIDER_MAX_RETRIES", 3);
+  return n >= 0 && n <= 10 ? n : 3;
+}
+
+/** Exponential backoff base for provider retries (default 1s → 2s → 4s). */
+export function providerRetryBackoffMs(): number {
+  const n = envInt("PROVIDER_RETRY_BACKOFF_MS", 1000);
+  return n > 0 ? n : 1000;
+}
+
+/** Chat messages per customer per hour (default 20, blueprint §7.6). */
+export function rateLimitMsgPerHour(): number {
+  return envInt("RATE_LIMIT_MSG_PER_HOUR", 20);
+}
+
+/** Refund requests per customer per day (default 5, blueprint §7.6). */
+export function rateLimitRefundPerDay(): number {
+  return envInt("RATE_LIMIT_REFUND_PER_DAY", 5);
+}
+
+/** API calls per IP per minute across all /api routes (default 100, §7.6). */
+export function rateLimitApiPerMin(): number {
+  return envInt("RATE_LIMIT_API_PER_MIN", 100);
+}
+
+export function rateLimitProvider(): "memory" | "redis" {
+  const v = envStr("RATE_LIMIT_PROVIDER", "memory").toLowerCase();
+  return v === "redis" ? "redis" : "memory";
+}
+
+/** Cumulative LLM spend per customer per day, in CENTS (default $50). */
+export function llmDailyCostCents(): number {
+  return envInt("LLM_DAILY_COST_CENTS", 5000);
+}
+
+/* -------------------------------------------------------------------------- */
 /*  Identity lifecycle (blueprint §7.1 / §7.4)                                 */
 /* -------------------------------------------------------------------------- */
 

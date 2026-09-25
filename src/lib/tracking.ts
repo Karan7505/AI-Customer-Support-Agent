@@ -1,6 +1,7 @@
 import { nowMs } from "./util";
 import { logger } from "./logger";
-import { easypostApiBase, easypostApiKey, trackingProvider } from "./env";
+import { easypostApiBase, easypostApiKey, providerTimeoutMs, trackingProvider } from "./env";
+import { withRetry, ProviderHttpError } from "./retry";
 import type { Order, TrackingStatus } from "./types";
 
 /**
@@ -100,11 +101,16 @@ async function easypostTracking(order: Order, trackingNumber: string): Promise<T
   const t0 = nowMs();
   // EasyPost uses HTTP basic auth: API key as the username, empty password.
   const auth = "Basic " + Buffer.from(`${easypostApiKey()}:`).toString("base64");
-  const res = await fetch(`${easypostApiBase()}/v2/trackings/${encodeURIComponent(trackingNumber)}`, {
-    headers: { Authorization: auth, Accept: "application/json" },
-  });
-  if (!res.ok) throw new Error(`easypost tracking failed: HTTP ${res.status}`);
-  const data = (await res.json()) as EasypostTrackingResponse;
+  // Shared retry policy (blueprint §8.3); the GET is idempotent, so retries
+  // are safe. Any final failure surfaces to resolveTracking's mock fallback.
+  const data = await withRetry(async () => {
+    const res = await fetch(`${easypostApiBase()}/v2/trackings/${encodeURIComponent(trackingNumber)}`, {
+      headers: { Authorization: auth, Accept: "application/json" },
+      signal: AbortSignal.timeout(providerTimeoutMs()),
+    });
+    if (!res.ok) throw new ProviderHttpError(res.status, `easypost tracking failed: HTTP ${res.status}`);
+    return (await res.json()) as EasypostTrackingResponse;
+  }, { label: "easypost tracking" });
   const t = data.tracking;
   if (!t) throw new Error("easypost response missing tracking object");
 

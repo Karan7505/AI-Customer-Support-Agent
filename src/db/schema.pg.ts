@@ -72,6 +72,8 @@ export const supportTickets = pgTable(
     priority: text("priority").notNull().default("medium"),
     status: text("status").notNull().default("open"),
     internalNotes: text("internalNotes"),
+    /** Deterministic dedupe key; same customer request returns the same ticket (§8.2). */
+    idempotencyKey: text("idempotencyKey"),
     createdAt: integer("createdAt").notNull(),
     updatedAt: integer("updatedAt").notNull(),
   },

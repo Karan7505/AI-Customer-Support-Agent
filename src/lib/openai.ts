@@ -1,7 +1,8 @@
 import type { LlmClient, LlmMessage, LlmPlan, LlmTool, LlmUsage } from "./llm";
 import { Errors } from "./errors";
 import { logger } from "./logger";
-import { llmTimeoutMs, openaiApiKey, openAiBaseUrl, openAiModel } from "./env";
+import { llmTimeoutMs, openaiApiKey, openAiBaseUrl, openAiModel, providerMaxRetries } from "./env";
+import { withRetry, errMsg } from "./retry";
 
 /**
  * Real OpenAI-compatible function-calling planner with hardening
@@ -19,8 +20,6 @@ import { llmTimeoutMs, openaiApiKey, openAiBaseUrl, openAiModel } from "./env";
  *    it degrades to the mock planner with a warning.
  */
 
-const MAX_RETRIES = 3;
-const RETRY_BACKOFF_MS = [1000, 2000, 4000];
 const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
 
 /** $/1M tokens for cost estimation in audit/caps. Unknown models cost 0. */
@@ -40,11 +39,8 @@ export function estimateCostCents(model: string, inputTokens: number, outputToke
 class LlmHttpError extends Error {
   constructor(readonly status: number, message: string) {
     super(message);
+    this.name = "LlmHttpError";
   }
-}
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }
 
 function isRetryable(e: unknown): boolean {
@@ -55,10 +51,6 @@ function isRetryable(e: unknown): boolean {
     return m.includes("fetch failed") || m.includes("econnreset") || m.includes("enotfound") || m.includes("etimedout");
   }
   return false;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
 }
 
 /**
@@ -163,33 +155,32 @@ export function createOpenAiLlm(opts: { apiKey?: string; baseUrl?: string; model
         );
       }
       const t0 = Date.now();
-      let lastErr: unknown;
-      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-        try {
-          return await planOnce(messages, tools);
-        } catch (e) {
-          lastErr = e;
-          if (!isRetryable(e) || attempt === MAX_RETRIES) break;
-          const delay = RETRY_BACKOFF_MS[attempt];
-          logger.warn("llm request retrying", {
-            model,
-            attempt: attempt + 1,
-            maxRetries: MAX_RETRIES,
-            delayMs: delay,
-            error: errMsg(e),
-          });
-          await sleep(delay);
-        }
+      // Shared retry policy (blueprint §8.3): 3 retries, 1s/2s/4s backoff,
+      // transient failures only. The plan is idempotent (read-only proposal).
+      try {
+        return await withRetry(() => planOnce(messages, tools), {
+          label: `openai ${model}`,
+          retryOn: isRetryable,
+          onRetry: (attempt, delayMs, e) =>
+            logger.warn("llm request retrying", {
+              model,
+              attempt,
+              maxRetries: providerMaxRetries(),
+              delayMs,
+              error: errMsg(e),
+            }),
+        });
+      } catch (lastErr) {
+        logger.error("llm request failed", {
+          model,
+          attempts: providerMaxRetries() + 1,
+          durationMs: Date.now() - t0,
+          error: errMsg(lastErr),
+        });
+        if (lastErr instanceof LlmHttpError) throw Errors.tool(lastErr.message);
+        const timedOut = lastErr instanceof Error && (lastErr.name === "TimeoutError" || lastErr.name === "AbortError");
+        throw Errors.tool(timedOut ? "LLM request timed out." : "LLM request failed.");
       }
-      logger.error("llm request failed", {
-        model,
-        attempts: MAX_RETRIES + 1,
-        durationMs: Date.now() - t0,
-        error: errMsg(lastErr),
-      });
-      if (lastErr instanceof LlmHttpError) throw Errors.tool(lastErr.message);
-      const timedOut = lastErr instanceof Error && (lastErr.name === "TimeoutError" || lastErr.name === "AbortError");
-      throw Errors.tool(timedOut ? "LLM request timed out." : "LLM request failed.");
     },
   };
 }
